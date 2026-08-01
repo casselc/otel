@@ -182,3 +182,50 @@
                                      (:schema-url scope) (assoc :schemaUrl (:schema-url scope))))
                                  collected)}
       (res/schema-url resource) (assoc :schemaUrl (res/schema-url resource)))]})
+
+;; --- logs -------------------------------------------------------------------
+
+(defn- body-value
+  "A log record's body as an AnyValue. A string stays a string; anything else is
+  rendered, since a log body is meant to be read by a human and an arbitrary
+  Clojure value has no faithful AnyValue shape."
+  [b]
+  (cond
+    (nil? b) {:stringValue ""}
+    (string? b) {:stringValue b}
+    (or (true? b) (false? b)) {:boolValue b}
+    (integer? b) {:intValue (i64 b)}
+    (float? b) {:doubleValue (double b)}
+    :else {:stringValue (pr-str b)}))
+
+(defn log-record->otlp
+  "One SDK log record as an OTLP LogRecord."
+  [r]
+  (cond-> {:observedTimeUnixNano (i64 (:observed-time-unix-nano r))
+           :severityNumber (or (:severity-number r) 0)
+           :body (body-value (:body r))}
+    (:severity-text r) (assoc :severityText (:severity-text r))
+    ;; timeUnixNano is when the event happened; it is optional, and omitting it
+    ;; tells the backend to fall back to the observed time rather than to 1970.
+    (:timestamp-unix-nano r) (assoc :timeUnixNano (i64 (:timestamp-unix-nano r)))
+    (seq (:attributes r)) (assoc :attributes (key-values (:attributes r)))
+    ;; The correlation that makes a log record worth sending through OTel at all.
+    (:trace-id r) (assoc :traceId (:trace-id r))
+    (:span-id r) (assoc :spanId (:span-id r))
+    (:trace-flags r) (assoc :flags (:trace-flags r))))
+
+(defn logs-request
+  "A batch of SDK log records as an OTLP ExportLogsServiceRequest, grouped
+  resource -> scope -> records."
+  [records]
+  {:resourceLogs
+   (mapv (fn [[resource by-resource]]
+           (cond-> {:resource (resource->otlp resource)
+                    :scopeLogs
+                    (mapv (fn [[scope by-scope]]
+                            (cond-> {:scope (scope->otlp scope)
+                                     :logRecords (mapv log-record->otlp by-scope)}
+                              (:schema-url scope) (assoc :schemaUrl (:schema-url scope))))
+                          (group-by :scope by-resource))}
+             (res/schema-url resource) (assoc :schemaUrl (res/schema-url resource))))
+         (group-by :resource records))})

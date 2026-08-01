@@ -1,5 +1,9 @@
 (ns otel.sdk-test
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.string :as str]
+            [clojure.tools.logging :as log]
+            [clojure.tools.logging.impl :as impl]
+            [otel.logs :as logs]
             [otel.metrics :as metrics]
             [otel.resource :as res]
             [otel.sdk :as sdk]
@@ -69,6 +73,40 @@
     (sdk/shutdown! handle)
     (is (nil? (sdk/tracer-provider)))
     (is (nil? (sdk/meter-provider)))))
+
+(deftest logs-are-off-by-default
+  (with-sdk {}
+    (fn [handle]
+      (is (nil? (:logger-provider handle)))
+      (testing "asking for a logger still yields a working no-op"
+        (is (some? (logs/emit! (sdk/logger "x") {:body "b" :severity :info})))))))
+
+(deftest logs-can-be-enabled
+  (let [handle (sdk/init! {:exporter :none :logs? true :metrics? false})]
+    (try
+      (testing ":exporter :none builds no log exporter, so no provider is installed"
+        (is (nil? (:logger-provider handle))))
+      (finally (sdk/shutdown! handle)))))
+
+(deftest enabling-logs-installs-the-logging-bridge
+  (let [before log/*logger-factory*
+        handle (sdk/init! {:exporter :console :processor :simple :logs? true :metrics? false})]
+    (try
+      (is (some? (:logger-provider handle)))
+      (is (some? (sdk/logger-provider)))
+      (testing "the bridge wraps the factory that was already installed"
+        (is (not= before log/*logger-factory*))
+        (is (str/includes? (impl/name log/*logger-factory*) "jolt/stderr")))
+      (finally (sdk/shutdown! handle)))
+    (testing "shutdown restores the original factory"
+      (is (= before log/*logger-factory*)))))
+
+(deftest the-bridge-can-be-declined
+  (let [before log/*logger-factory*
+        handle (sdk/init! {:exporter :console :logs? true :bridge-logging? false :metrics? false})]
+    (try
+      (is (= before log/*logger-factory*))
+      (finally (sdk/shutdown! handle)))))
 
 (deftest console-exporter-wiring
   (let [handle (sdk/init! {:exporter :console :processor :simple :metrics? false})]

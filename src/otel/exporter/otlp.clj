@@ -9,6 +9,9 @@
     OTEL_EXPORTER_OTLP_HEADERS           comma-separated key=value request headers
     OTEL_EXPORTER_OTLP_TIMEOUT           per-request timeout in milliseconds
 
+  Both http and https endpoints work; TLS comes from jolt-lang/http-client over
+  the system OpenSSL.
+
   Retries follow the OTLP spec: only the response codes the spec calls retryable
   are retried, with exponential backoff, and a `Retry-After` header is honoured.
   Everything else — a rejected payload, an unreachable collector, a timeout — is
@@ -18,7 +21,8 @@
             [otel.otlp.encode :as enc]
             [otel.otlp.http :as http]
             [otel.otlp.json :as json]
-            [otel.sdk.export :as export]))
+            [otel.sdk.export :as export]
+            [otel.sdk.logs :as sdk-logs]))
 
 (def default-endpoint "http://localhost:4318")
 (def traces-path "/v1/traces")
@@ -60,11 +64,14 @@
       (min 30000 (* 1000 (long (Math/pow 2 attempt))))))
 
 (defn- attempt-post
-  [url payload headers timeout-ms]
+  [url payload headers timeout-ms insecure?]
   (try
     (http/post url payload {:headers (merge {"Content-Type" "application/json"} headers)
-                            :timeout-ms timeout-ms})
+                            :timeout-ms timeout-ms
+                            :insecure? insecure?})
     (catch :default e
+      ;; A connection failure, a DNS miss, a TLS handshake rejection. Reported as
+      ;; a failed export, never raised into the application.
       {:status nil :error e})))
 
 (defn- report!
@@ -75,14 +82,14 @@
   (binding [*out* *err*]
     (println "otel: " msg)))
 
-(defrecord OtlpHttpExporter [url headers timeout-ms max-retries state]
+(defrecord OtlpHttpExporter [url headers timeout-ms max-retries insecure? state]
   export/SpanExporter
   (export-spans! [_ spans]
     (if (or (:shutdown? @state) (empty? spans))
       (not (:shutdown? @state))
-      (let [payload (.getBytes (json/write-str (enc/traces-request spans)) "UTF-8")]
+      (let [payload (json/write-str (enc/traces-request spans))]
         (loop [attempt 0]
-          (let [{:keys [status body error retry-after]} (attempt-post url payload headers timeout-ms)]
+          (let [{:keys [status body error retry-after]} (attempt-post url payload headers timeout-ms insecure?)]
             (cond
               (and status (<= 200 status 299))
               (do
@@ -114,13 +121,13 @@
     :traces-url   full traces URL, overriding :endpoint
     :headers      map of extra request headers
     :timeout-ms   per-request timeout (default 10000)
-    :max-retries  retryable-failure attempts after the first (default 3)"
+    :max-retries  retryable-failure attempts after the first (default 3)
+    :insecure?    skip TLS certificate verification (self-signed collector certs)"
   ([] (exporter {}))
-  ([{:keys [headers timeout-ms max-retries] :as opts}]
+  ([{:keys [headers timeout-ms max-retries insecure?] :as opts}]
    (let [url (traces-endpoint opts)]
      (when-not (http/supports-scheme? url)
-       (throw (ex-info (str "otel: the OTLP exporter only supports http:// endpoints, got " url
-                            " — send to a local collector or sidecar and let it forward over TLS")
+       (throw (ex-info (str "otel: the OTLP endpoint must be http:// or https://, got " url)
                        {:url url})))
      (->OtlpHttpExporter url
                          (merge (parse-headers (env "OTEL_EXPORTER_OTLP_HEADERS")) headers)
@@ -128,6 +135,7 @@
                              (some-> (env "OTEL_EXPORTER_OTLP_TIMEOUT") str/trim Long/parseLong)
                              10000)
                          (or max-retries 3)
+                         (boolean insecure?)
                          (atom {:shutdown? false})))))
 
 ;; --- metrics ----------------------------------------------------------------
@@ -142,14 +150,14 @@
       (let [base (or endpoint (env "OTEL_EXPORTER_OTLP_ENDPOINT") default-endpoint)]
         (str (str/replace base #"/+$" "") metrics-path))))
 
-(defrecord OtlpHttpMetricExporter [url headers timeout-ms max-retries state]
+(defrecord OtlpHttpMetricExporter [url headers timeout-ms max-retries insecure? state]
   export/MetricExporter
   (export-metrics! [_ resource collected]
     (if (:shutdown? @state)
       false
-      (let [payload (.getBytes (json/write-str (enc/metrics-request resource collected)) "UTF-8")]
+      (let [payload (json/write-str (enc/metrics-request resource collected))]
         (loop [attempt 0]
-          (let [{:keys [status body error retry-after]} (attempt-post url payload headers timeout-ms)]
+          (let [{:keys [status body error retry-after]} (attempt-post url payload headers timeout-ms insecure?)]
             (cond
               (and status (<= 200 status 299))
               (do (when-let [rejected (json/find-number body "rejectedDataPoints")]
@@ -173,10 +181,10 @@
   "An OTLP/HTTP metric exporter. Same options as `exporter`, with :metrics-url in
   place of :traces-url."
   ([] (metric-exporter {}))
-  ([{:keys [headers timeout-ms max-retries] :as opts}]
+  ([{:keys [headers timeout-ms max-retries insecure?] :as opts}]
    (let [url (metrics-endpoint opts)]
      (when-not (http/supports-scheme? url)
-       (throw (ex-info (str "otel: the OTLP exporter only supports http:// endpoints, got " url)
+       (throw (ex-info (str "otel: the OTLP endpoint must be http:// or https://, got " url)
                        {:url url})))
      (->OtlpHttpMetricExporter url
                                (merge (parse-headers (env "OTEL_EXPORTER_OTLP_HEADERS")) headers)
@@ -184,4 +192,62 @@
                                    (some-> (env "OTEL_EXPORTER_OTLP_TIMEOUT") str/trim Long/parseLong)
                                    10000)
                                (or max-retries 3)
+                               (boolean insecure?)
                                (atom {:shutdown? false})))))
+
+;; --- logs -------------------------------------------------------------------
+
+(def logs-path "/v1/logs")
+
+(defn logs-endpoint
+  "Resolve the logs URL, on the same base/signal-specific rules as traces."
+  [{:keys [endpoint logs-url]}]
+  (or logs-url
+      (env "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")
+      (let [base (or endpoint (env "OTEL_EXPORTER_OTLP_ENDPOINT") default-endpoint)]
+        (str (str/replace base #"/+$" "") logs-path))))
+
+(defrecord OtlpHttpLogExporter [url headers timeout-ms max-retries insecure? state]
+  sdk-logs/LogRecordExporter
+  (export-logs! [_ records]
+    (if (or (:shutdown? @state) (empty? records))
+      (not (:shutdown? @state))
+      (let [payload (json/write-str (enc/logs-request records))]
+        (loop [attempt 0]
+          (let [{:keys [status body error retry-after]} (attempt-post url payload headers timeout-ms insecure?)]
+            (cond
+              (and status (<= 200 status 299))
+              (do (when-let [rejected (json/find-number body "rejectedLogRecords")]
+                    (when (pos? rejected)
+                      (report! (str "collector rejected " rejected " log records"))))
+                  true)
+
+              (and (contains? retryable-status status) (< attempt max-retries))
+              (do (Thread/sleep (backoff-ms attempt retry-after))
+                  (recur (inc attempt)))
+
+              :else
+              (do (report! (str "log export failed: "
+                                (cond error (or (ex-message error) (str error))
+                                      status (str "HTTP " status)
+                                      :else "no response")))
+                  false)))))))
+  (shutdown-log-exporter! [_] (swap! state assoc :shutdown? true) true))
+
+(defn log-exporter
+  "An OTLP/HTTP log record exporter. Same options as `exporter`, with :logs-url
+  in place of :traces-url."
+  ([] (log-exporter {}))
+  ([{:keys [headers timeout-ms max-retries insecure?] :as opts}]
+   (let [url (logs-endpoint opts)]
+     (when-not (http/supports-scheme? url)
+       (throw (ex-info (str "otel: the OTLP endpoint must be http:// or https://, got " url)
+                       {:url url})))
+     (->OtlpHttpLogExporter url
+                            (merge (parse-headers (env "OTEL_EXPORTER_OTLP_HEADERS")) headers)
+                            (or timeout-ms
+                                (some-> (env "OTEL_EXPORTER_OTLP_TIMEOUT") str/trim Long/parseLong)
+                                10000)
+                            (or max-retries 3)
+                            (boolean insecure?)
+                            (atom {:shutdown? false})))))

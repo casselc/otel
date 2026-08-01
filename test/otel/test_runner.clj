@@ -17,6 +17,7 @@
     otel.context-test
     otel.sdk.clock-test
     otel.sdk-test
+    otel.sdk.logs-test
     otel.sdk.metrics-test
     otel.sdk.sampler-test
     otel.sdk.tracer-test

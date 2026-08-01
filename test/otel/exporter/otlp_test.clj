@@ -46,13 +46,21 @@
   (testing "a malformed entry is skipped, not fatal"
     (is (= {"b" "2"} (otlp/parse-headers "junk,b=2")))))
 
-(deftest https-is-rejected-with-a-clear-error
-  (testing "an https endpoint must fail at construction with an actionable message,
-            not obscurely at the first export"
-    (let [e (try (otlp/exporter {:endpoint "https://collector.example.com"}) nil
-                 (catch :default e e))]
-      (is (some? e))
-      (is (str/includes? (ex-message e) "http://")))))
+(deftest https-endpoints-are-supported
+  (testing "TLS comes from http-client, so an https collector is a normal endpoint"
+    (is (http/supports-scheme? "https://collector.example.com"))
+    (is (http/supports-scheme? "http://localhost:4318"))
+    (let [e (otlp/exporter {:endpoint "https://collector.example.com"})]
+      (is (= "https://collector.example.com/v1/traces" (:url e))))))
+
+(deftest a-non-http-scheme-is-still-rejected
+  (testing "gRPC is not implemented, so an otlp-grpc endpoint must fail loudly at
+            construction rather than being silently posted to as if it were HTTP"
+    (is (thrown? Exception (otlp/exporter {:traces-url "grpc://collector:4317"})))))
+
+(deftest insecure-is-off-by-default
+  (is (false? (:insecure? (otlp/exporter {:endpoint "https://c.example.com"}))))
+  (is (true? (:insecure? (otlp/exporter {:endpoint "https://c.example.com" :insecure? true})))))
 
 ;; --- stdout exporters -------------------------------------------------------
 

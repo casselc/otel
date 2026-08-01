@@ -4,9 +4,21 @@ An [OpenTelemetry](https://opentelemetry.io) implementation for
 [Jolt](https://github.com/jolt-lang/jolt) — the API instrumentation is written
 against, and the SDK that records and exports it.
 
-Traces and metrics are implemented, including OTLP/HTTP export, W3C context
-propagation, and runtime metrics read straight off Chez Scheme's collector. Logs
-are not implemented yet.
+All three signals are implemented — traces, metrics and logs — with OTLP/HTTP
+export over http and https, W3C context propagation, runtime metrics read
+straight off Chez Scheme's collector, and a `clojure.tools.logging` bridge that
+correlates log lines with the span they were written inside.
+
+## Dependencies
+
+| Library | Why |
+| --- | --- |
+| [jolt-lang/http-client](https://github.com/jolt-lang/http-client) | OTLP transport, including TLS |
+| [jolt-lang/jolt-crypto](https://github.com/jolt-lang/jolt-crypto) | the OpenSSL (`libssl`/`libcrypto`) declarations TLS needs |
+| [jolt-lang/logging](https://github.com/jolt-lang/logging) | `clojure.tools.logging`, for the logs bridge |
+
+All three are git coordinates in `deps.edn`; https also needs the system OpenSSL
+(`brew install openssl@3` on macOS, the distro `libssl3` on Linux).
 
 ## Requirements
 
@@ -103,6 +115,8 @@ so nothing sensitive belongs in it.
 | `:processor` | — | `:batch` (also `:simple`) |
 | `:metrics?` / `:runtime-metrics?` | — | true |
 | `:metric-interval-ms` | — | 60000 |
+| `:logs?` / `:bridge-logging?` | — | false / true |
+| `:insecure?` | — | false (skip TLS verification) |
 | — | `OTEL_SDK_DISABLED=true` | installs nothing |
 | — | `OTEL_RESOURCE_ATTRIBUTES` | merged into the resource |
 
@@ -145,20 +159,48 @@ as `anchor-wall + (mono-now - anchor-mono)`, so timestamps stay epoch-based whil
 durations come entirely from the monotonic clock. A clock adjustment in the
 middle of a span cannot make it end before it started.
 
+## Logs
+
+Logs are the one signal you do not normally emit by hand. Turn the signal on and
+keep using `clojure.tools.logging`:
+
+```clojure
+(sdk/init! {:service-name "checkout" :logs? true})
+
+(trace/with-span [sp tracer "GET /cart"]
+  (log/info "handling the cart request"))
+```
+
+The bridge is **additive** — it wraps whatever logger factory was already
+installed, so stderr (or anything else configured) keeps working exactly as
+before, and `shutdown!` puts the original back. Set `:bridge-logging? false` to
+enable the signal without touching the application's logging.
+
+What OpenTelemetry adds over the line you were already writing is correlation:
+a record emitted inside a span carries that span's trace and span ids, so a
+backend can show a request's logs beside that same request's trace. Levels map
+onto the spec's severity ranges (`:trace` 1, `:debug` 5, `:info` 9, `:warn` 13,
+`:error` 17, `:fatal` 21), and a throwable passed to `log/error` becomes
+`exception.type` / `exception.message` / `exception.data` attributes.
+
+`otel.logs/emit!` is there for a bridge from another logging library, or for
+emitting structured records directly.
+
 ## Export
 
 The exporter speaks **OTLP/HTTP with the JSON Protobuf encoding**, which is a
 first-class encoding in the OTLP spec and interoperates with the OpenTelemetry
-Collector and every backend that accepts OTLP/HTTP.
+Collector and every backend that accepts OTLP/HTTP. Traces go to `/v1/traces`,
+metrics to `/v1/metrics`, logs to `/v1/logs`.
 
-Two things are deliberately out of scope:
+Transport is [jolt-lang/http-client](https://github.com/jolt-lang/http-client),
+so **https endpoints work** — TLS comes from the system OpenSSL. `:insecure?`
+skips certificate verification for a collector with a self-signed cert; do not
+use it across an untrusted network.
 
-- **gRPC** — needs HTTP/2 and binary protobuf, neither of which exists on this
-  host. Use OTLP/HTTP.
-- **TLS** — the transport is cleartext `http://` only. An `https://` endpoint is
-  rejected at construction with a clear message rather than failing later. Send
-  to a collector on localhost or a sidecar and let it forward over TLS, which is
-  the recommended OTLP topology anyway.
+**gRPC is not implemented** — it needs HTTP/2 and binary protobuf, neither of
+which exists on this host. A non-http(s) endpoint is rejected at construction
+rather than being posted to as if it were HTTP.
 
 ## Namespaces
 
@@ -166,6 +208,7 @@ Two things are deliberately out of scope:
 
 - `otel.trace` — span contexts, the Span/Tracer protocols, `with-span`
 - `otel.metrics` — meters and instruments
+- `otel.logs` — loggers and log records
 - `otel.context` — the propagation context and the active-context slot
 - `otel.baggage`, `otel.propagation` — W3C Baggage and Trace Context
 - `otel.attributes`, `otel.resource` — the common data model
@@ -174,7 +217,8 @@ Two things are deliberately out of scope:
 
 - `otel.sdk` — `init!`, `shutdown!`, and the global tracer/meter registry
 - `otel.sdk.tracer`, `otel.sdk.span`, `otel.sdk.sampler`, `otel.sdk.export`
-- `otel.sdk.metrics`, `otel.sdk.clock`, `otel.id`
+- `otel.sdk.metrics`, `otel.sdk.logs`, `otel.sdk.clock`, `otel.id`
+- `otel.bridge.tools-logging` — the clojure.tools.logging appender
 
 **Exporters** — `otel.exporter.otlp`, `otel.exporter.stdout`,
 `otel.exporter.memory` (for tests).
@@ -193,7 +237,9 @@ instrumentation produced:
   (is (= ["op"] (map :name (memory/spans exporter)))))
 ```
 
-`otel.sdk.clock/fake-clock` drives time explicitly for assertions on durations.
+`memory/metric-exporter` and `memory/log-exporter` do the same for the other two
+signals, and `otel.sdk.clock/fake-clock` drives time explicitly for assertions on
+durations.
 
 ## Tests
 

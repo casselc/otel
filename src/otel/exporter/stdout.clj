@@ -8,7 +8,8 @@
   problem or feeding a file to a collector after the fact."
   (:require [otel.otlp.encode :as enc]
             [otel.otlp.json :as json]
-            [otel.sdk.export :as export]))
+            [otel.sdk.export :as export]
+            [otel.sdk.logs :as sdk-logs]))
 
 (defn- duration-ms [s]
   (/ (double (- (or (:end-time-unix-nano s) 0) (or (:start-time-unix-nano s) 0))) 1000000.0))
@@ -90,3 +91,24 @@
   ([] (metric-exporter {}))
   ([{:keys [writer]}]
    (->StdoutMetricExporter (or writer println) (atom {:shutdown? false}))))
+
+;; --- logs -------------------------------------------------------------------
+
+(defn- format-record [r]
+  (str (:severity-text r) " " (:body r)
+       (when (:trace-id r) (str " trace=" (subs (str (:trace-id r)) 0 16) "… span=" (:span-id r)))
+       (when (seq (:attributes r)) (str " " (pr-str (:attributes r))))))
+
+(defrecord StdoutLogExporter [writer state]
+  sdk-logs/LogRecordExporter
+  (export-logs! [_ records]
+    (if (:shutdown? @state)
+      false
+      (do (doseq [r records] (writer (format-record r))) true)))
+  (shutdown-log-exporter! [_] (swap! state assoc :shutdown? true) true))
+
+(defn log-exporter
+  "Print one line per log record."
+  ([] (log-exporter {}))
+  ([{:keys [writer]}]
+   (->StdoutLogExporter (or writer println) (atom {:shutdown? false}))))

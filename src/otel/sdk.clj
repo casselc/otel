@@ -21,13 +21,16 @@
   without the application having to thread a provider into it."
   (:refer-clojure :exclude [name])
   (:require [clojure.string :as str]
+            [otel.bridge.tools-logging :as tools-logging]
             [otel.exporter.otlp :as otlp]
             [otel.exporter.stdout :as stdout]
             [otel.instrument.runtime :as runtime]
+            [otel.logs :as logs-api]
             [otel.metrics :as metrics-api]
             [otel.propagation :as propagation]
             [otel.resource :as res]
             [otel.sdk.export :as export]
+            [otel.sdk.logs :as sdk-logs]
             [otel.sdk.metrics :as sdk-metrics]
             [otel.sdk.sampler :as sampler]
             [otel.sdk.tracer :as sdk-tracer]
@@ -35,7 +38,7 @@
 
 ;; --- global registry --------------------------------------------------------
 
-(defonce ^:private global (atom {:tracer-provider nil :meter-provider nil}))
+(defonce ^:private global (atom {:tracer-provider nil :meter-provider nil :logger-provider nil}))
 
 (defn tracer-provider
   "The installed tracer provider, or nil."
@@ -46,6 +49,11 @@
   "The installed meter provider, or nil."
   []
   (:meter-provider @global))
+
+(defn logger-provider
+  "The installed logger provider, or nil."
+  []
+  (:logger-provider @global))
 
 (defn tracer
   "A tracer for `scope-name` from the installed provider. Falls back to the API's
@@ -64,6 +72,16 @@
    (if-let [p (meter-provider)]
      (sdk-metrics/get-meter p (assoc opts :name scope-name))
      metrics-api/noop-meter)))
+
+(defn logger
+  "A logger for `scope-name` from the installed provider, or the no-op logger.
+  Most code should not need this — configure `:logs? true` and keep using
+  clojure.tools.logging, which the bridge routes here."
+  ([scope-name] (logger scope-name {}))
+  ([scope-name opts]
+   (if-let [p (logger-provider)]
+     (sdk-logs/get-logger p (assoc opts :name scope-name))
+     logs-api/noop-logger)))
 
 ;; --- configuration ----------------------------------------------------------
 
@@ -88,6 +106,12 @@
     (:console :json) (stdout/metric-exporter {})
     (otlp/metric-exporter opts)))
 
+(defn- build-log-exporter [exporter-kind opts]
+  (case exporter-kind
+    :none nil
+    (:console :json) (stdout/log-exporter {})
+    (otlp/log-exporter opts)))
+
 (defn init!
   "Configure and install a tracing (and, unless disabled, metrics) SDK.
 
@@ -104,13 +128,17 @@
     :metrics?         collect metrics (default true)
     :runtime-metrics? register the Chez runtime instruments (default true)
     :metric-interval-ms  metric collection period (default 60000)
+    :logs?            emit the logs signal (default false)
+    :bridge-logging?  route clojure.tools.logging through it (default true when
+                      :logs? is on) -- additive, the existing backend keeps working
 
   Returns a handle for `shutdown!`. Honours OTEL_SDK_DISABLED=true by installing
   nothing, which is how the spec says to turn telemetry off without code changes."
   ([] (init! {}))
   ([{:keys [service-name resource sampler exporter endpoint headers processor
-            metrics? runtime-metrics? metric-interval-ms]
-     :or {exporter :otlp processor :batch metrics? true runtime-metrics? true}
+            metrics? runtime-metrics? metric-interval-ms logs? bridge-logging?]
+     :or {exporter :otlp processor :batch metrics? true runtime-metrics? true
+          logs? false bridge-logging? true}
      :as opts}]
    (if (disabled?)
      {:disabled? true}
@@ -137,14 +165,28 @@
                                                            (select-keys opts [:endpoint :headers :metrics-url :timeout-ms])))
            reader (when metric-exporter
                     (sdk-metrics/periodic-reader mp metric-exporter
-                                                 {:interval-ms (or metric-interval-ms 60000)}))]
+                                                 {:interval-ms (or metric-interval-ms 60000)}))
+           log-exporter (when logs?
+                          (build-log-exporter exporter
+                                              (select-keys opts [:endpoint :headers :logs-url :timeout-ms])))
+           lp (when log-exporter
+                (sdk-logs/logger-provider
+                  {:resource base
+                   :processors [(if (= :simple processor)
+                                  (sdk-logs/simple-processor log-exporter)
+                                  (sdk-logs/batch-processor log-exporter {}))]}))
+           ;; Off by default: installing it rewires the application's logging, which
+           ;; is too big a side effect to take without being asked.
+           previous-factory (when (and lp bridge-logging?) (tools-logging/install! lp))]
        (when (and mp runtime-metrics?)
          (runtime/register! (sdk-metrics/get-meter mp {:name "otel.instrument.runtime"
                                                        :version res/sdk-version})))
-       (swap! global assoc :tracer-provider tp :meter-provider mp)
+       (swap! global assoc :tracer-provider tp :meter-provider mp :logger-provider lp)
        {:tracer-provider tp
         :meter-provider mp
+        :logger-provider lp
         :reader reader
+        :previous-logger-factory previous-factory
         :propagator propagation/default-propagator}))))
 
 (defn force-flush!
@@ -152,7 +194,8 @@
   [handle]
   (boolean
     (and (some-> (:tracer-provider handle) sdk-tracer/force-flush!)
-         (or (nil? (:reader handle)) (export/force-flush! (:reader handle))))))
+         (or (nil? (:reader handle)) (export/force-flush! (:reader handle)))
+         (or (nil? (:logger-provider handle)) (sdk-logs/force-flush! (:logger-provider handle))))))
 
 (defn shutdown!
   "Flush and stop everything `init!` started, and clear the global registry.
@@ -160,9 +203,14 @@
   Call this before the process exits: a batch processor holds spans that have not
   been sent yet, and they are lost if the process just ends."
   [handle]
+  ;; The logging bridge is removed first: once the logger provider is shut down,
+  ;; a bridged log call would emit into a dead provider on every line.
+  (when-let [previous (:previous-logger-factory handle)]
+    (tools-logging/uninstall! previous))
   (let [ok (cond-> true
              (:reader handle) (and (export/shutdown! (:reader handle)))
+             (:logger-provider handle) (and (sdk-logs/shutdown! (:logger-provider handle)))
              (:meter-provider handle) (and (sdk-metrics/shutdown! (:meter-provider handle)))
              (:tracer-provider handle) (and (sdk-tracer/shutdown! (:tracer-provider handle))))]
-    (reset! global {:tracer-provider nil :meter-provider nil})
+    (reset! global {:tracer-provider nil :meter-provider nil :logger-provider nil})
     ok))

@@ -1,7 +1,8 @@
 (ns otel.exporter.memory
   "An exporter that keeps everything in memory. For tests: assert on what
   instrumentation actually produced, without a collector or a network."
-  (:require [otel.sdk.export :as export]))
+  (:require [otel.sdk.export :as export]
+            [otel.sdk.logs :as sdk-logs]))
 
 (defrecord InMemoryExporter [state]
   export/SpanExporter
@@ -70,3 +71,23 @@
   "Every metric from every collection, flattened."
   [e]
   (mapcat (fn [c] (mapcat :metrics (:collected c))) (collections e)))
+
+;; --- logs -------------------------------------------------------------------
+
+(defrecord InMemoryLogExporter [state]
+  sdk-logs/LogRecordExporter
+  (export-logs! [_ records]
+    (if (:shutdown? @state)
+      false
+      (do (swap! state update :records into records) true)))
+  (shutdown-log-exporter! [_] (swap! state assoc :shutdown? true) true))
+
+(defn log-exporter
+  "A fresh in-memory log record exporter."
+  []
+  (->InMemoryLogExporter (atom {:records [] :shutdown? false})))
+
+(defn records
+  "Every log record handed to the exporter, in order."
+  [e]
+  (:records @(:state e)))
