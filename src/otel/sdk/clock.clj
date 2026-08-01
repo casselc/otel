@@ -51,6 +51,24 @@
     (+ anchor-wall (- (mono-nanos source) anchor-mono)))
   (mono-nanos [_] (mono-nanos source)))
 
+(defn require-host-clock!
+  "Fail early, and legibly, on a jolt that predates the telemetry primitives.
+
+  Unlike a resource attribute, the clock has no meaningful fallback: deriving it
+  from System/currentTimeMillis would make every span millisecond-granular and
+  wall-clock-timed, which is the exact defect the two-clock design exists to
+  avoid. So this is a hard requirement, and the useful thing to do is say so once
+  at startup rather than raise `No such var` from inside the first span."
+  []
+  (try
+    (jolt.host/wall-nanos)
+    (catch :default _
+      (throw (ex-info (str "otel: this jolt build does not expose jolt.host/wall-nanos. "
+                           "The SDK needs the jolt.host telemetry primitives (wall-nanos, "
+                           "mono-nanos, the gc and memory counters); build jolt from a "
+                           "checkout that includes them.")
+                      {:missing 'jolt.host/wall-nanos})))))
+
 (defn anchored
   "Pin `clock`'s current wall reading to its current monotonic reading.
 
@@ -60,7 +78,11 @@
   the anchor's accuracy against true wall time drifts with the monotonic clock,
   so it is a trade of absolute accuracy for interval correctness."
   ([] (anchored system))
-  ([clock] (->AnchoredClock clock (wall-nanos clock) (mono-nanos clock))))
+  ([clock]
+   ;; Checked here because every provider builds its clock through this call, so
+   ;; one check covers traces and metrics both.
+   (when (instance? SystemClock clock) (require-host-clock!))
+   (->AnchoredClock clock (wall-nanos clock) (mono-nanos clock))))
 
 ;; --- test clock -------------------------------------------------------------
 

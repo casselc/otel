@@ -59,17 +59,27 @@
 (defn- pid []
   (try (c-getpid) (catch :default _ nil)))
 
+(defn- probe
+  "Call `f`, yielding nil if it fails. Resource detection is best-effort: a host
+  that cannot answer one of these questions — an older jolt without a given
+  jolt.host primitive, say — should cost that single attribute, not the whole
+  resource and with it the SDK's startup."
+  [f]
+  (try (f) (catch :default _ nil)))
+
 (defn process-resource
   "Attributes describing the running process and the runtime under it."
   []
-  (let [pid (pid)]
+  (let [pid (pid)
+        scheme (probe #(jolt.host/scheme-version))
+        jolt-v (probe #(jolt.host/jolt-version))]
     (resource
-      (cond-> {:process.runtime.name "Chez Scheme"
-               :process.runtime.version (jolt.host/scheme-version)
-               ;; The jolt layer is what the application actually runs on, so the
-               ;; description names both it and the Scheme underneath.
-               :process.runtime.description (str "jolt " (jolt.host/jolt-version)
-                                                 " on " (jolt.host/scheme-version))}
+      (cond-> {:process.runtime.name "Chez Scheme"}
+        scheme (assoc :process.runtime.version scheme)
+        ;; The jolt layer is what the application actually runs on, so the
+        ;; description names both it and the Scheme underneath.
+        (or scheme jolt-v) (assoc :process.runtime.description
+                                  (str "jolt " (or jolt-v "?") " on " (or scheme "Chez Scheme")))
         pid (assoc :process.pid pid)))))
 
 (defn- machine->arch
@@ -103,8 +113,9 @@
 (defn host-resource
   "Attributes describing the machine and operating system."
   []
-  (resource {:host.arch (machine->arch (jolt.host/machine-type))
-             :os.type (os-type (System/getProperty "os.name"))}))
+  (let [machine (probe #(jolt.host/machine-type))]
+    (resource (cond-> {:os.type (os-type (System/getProperty "os.name"))}
+                machine (assoc :host.arch (machine->arch machine))))))
 
 ;; --- environment ------------------------------------------------------------
 

@@ -8,6 +8,15 @@ Traces and metrics are implemented, including OTLP/HTTP export, W3C context
 propagation, and runtime metrics read straight off Chez Scheme's collector. Logs
 are not implemented yet.
 
+## Requirements
+
+A jolt whose `jolt.host` exposes the telemetry primitives (`wall-nanos`,
+`mono-nanos`, the gc and memory counters). These landed in jolt alongside this
+library and are not in the released binaries yet, so for now build jolt from a
+checkout that includes them. The SDK checks at startup and says so plainly if
+they are missing — it will not silently fall back to a millisecond clock, since
+that is the exact defect the two-clock design exists to avoid.
+
 ## Install
 
 ```clojure
