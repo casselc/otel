@@ -1,0 +1,9 @@
+{:paths ["src"]
+
+ :deps {}
+
+ :aliases {:test {:extra-paths ["test"]}}
+
+ ;; A map task applies the project's own :paths only, so the test task shells back
+ ;; through jolt with -M:test to pick up the :test alias's extra path.
+ :tasks {test "jolt -M:test -m otel.test-runner"}}
