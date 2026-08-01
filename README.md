@@ -23,18 +23,25 @@ All three are git coordinates in `deps.edn`; https also needs the system OpenSSL
 ## Requirements
 
 A jolt whose `jolt.host` exposes the telemetry primitives (`wall-nanos`,
-`mono-nanos`, the gc and memory counters). These landed in jolt alongside this
-library and are not in the released binaries yet, so for now build jolt from a
-checkout that includes them. The SDK checks at startup and says so plainly if
-they are missing — it will not silently fall back to a millisecond clock, since
-that is the exact defect the two-clock design exists to avoid.
+`mono-nanos`, the gc and memory counters). These are
+[jolt-lang/jolt#514](https://github.com/jolt-lang/jolt/pull/514) and are **not
+in any jolt release yet** — until it merges, build jolt from a checkout of that
+branch.
+
+The SDK checks at startup and says so plainly if the primitives are missing. It
+will not silently fall back to a millisecond clock: that is the exact defect the
+two-clock design exists to avoid, and a quiet degradation would make every span
+duration wrong in a way nothing downstream could detect.
 
 ## Install
 
 ```clojure
 ;; deps.edn
-{:deps {io.github.jolt-lang/otel {:git/sha "..."}}}
+{:deps {io.github.jolt-lang/otel {:git/tag "v0.1.0" :git/sha "1c71b56"}}}
 ```
+
+A `:git/sha` must be the full 40-character sha, or a prefix alongside a
+`:git/tag` as above — jolt rejects a bare abbreviated sha.
 
 ## Use
 
