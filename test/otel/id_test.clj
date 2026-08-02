@@ -54,3 +54,35 @@
   (testing "generation must not emit the all-zero id"
     (is (every? id/valid-trace-id? (repeatedly 100 id/trace-id)))
     (is (every? id/valid-span-id? (repeatedly 100 id/span-id)))))
+
+;; jolt's rand-int runs off a PRNG seeded identically in every process, so ids
+;; drawn from it repeat exactly across runs -- every service in a fleet would
+;; emit the same trace id and the backend would splice unrelated traces
+;; together. Ids must come from OS entropy instead, which is what pinning
+;; rand-int to a constant demonstrates: it must not change the output.
+(deftest ids-do-not-come-from-the-process-prng
+  (let [pinned (with-redefs [rand-int (constantly 1)]
+                 (repeatedly 5 id/trace-id))]
+    (is (every? id/valid-trace-id? pinned))
+    (is (= 5 (count (distinct pinned))))
+    (is (not-any? #(= % (apply str (repeat 32 "1"))) pinned)))
+  (let [pinned (with-redefs [rand-int (constantly 1)]
+                 (repeatedly 5 id/span-id))]
+    (is (= 5 (count (distinct pinned))))))
+
+(deftest the-entropy-source-is-the-os
+  (testing "distinct draws, and enough spread that it is not a counter"
+    (let [draws (repeatedly 20 #(vec (@#'id/entropy 16)))]
+      (is (= 20 (count (distinct draws))))
+      (is (every? #(= 16 (count %)) draws)))))
+
+(deftest the-fallback-still-produces-distinct-ids
+  (testing "a host without OpenSSL gets weaker bytes, but not a repeating stream"
+    (let [draws (repeatedly 50 #(vec (@#'id/fallback-bytes 16)))]
+      (is (every? #(= 16 (count %)) draws))
+      (is (= 50 (count (distinct draws))))))
+  (testing "and the ids built from them are still well-formed"
+    (let [ids (with-redefs [id/os-entropy? false]
+                (repeatedly 50 id/trace-id))]
+      (is (every? id/valid-trace-id? ids))
+      (is (= 50 (count (distinct ids)))))))

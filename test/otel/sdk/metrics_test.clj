@@ -223,11 +223,22 @@
       (testing "cpu count comes from the host"
         (is (pos? (:value (point-for (get by-name "system.cpu.logical.count") {}))))))))
 
+;; Not "allocating makes the number go up": the gauge reports bytes live on the
+;; Chez heap, so a collection between two reads can leave it lower than it
+;; started no matter what the test retains. What the gauge owes us is that each
+;; read reflects the host counter at that moment rather than a cached constant.
 (deftest runtime-heap-gauge-tracks-real-allocation
-  (let [{:keys [provider meter]} (setup)]
+  (let [{:keys [provider meter]} (setup)
+        read-gauge #(:value (point-for (metric-named provider "process.runtime.jolt.memory.heap") {}))
+        ;; reading the gauge allocates, so allow a slack rather than equality
+        tracks? (fn [gauge host] (< (abs (- gauge host)) (max 2000000 (* 0.05 host))))]
     (runtime/register! meter)
-    (let [before (:value (point-for (metric-named provider "process.runtime.jolt.memory.heap") {}))
+    (let [host-1 (jolt.host/bytes-allocated)
+          gauge-1 (read-gauge)
           keep (into [] (map #(str "padpadpadpad" %) (range 100000)))
-          after (:value (point-for (metric-named provider "process.runtime.jolt.memory.heap") {}))]
+          host-2 (jolt.host/bytes-allocated)
+          gauge-2 (read-gauge)]
       (is (= 100000 (count keep)))
-      (is (> after before) "retained allocation must move the live-heap gauge"))))
+      (is (pos? gauge-1))
+      (is (tracks? gauge-1 host-1) "the gauge must report the host counter, not a constant")
+      (is (tracks? gauge-2 host-2) "and must re-read it on every collection"))))

@@ -22,11 +22,8 @@ All three are git coordinates in `deps.edn`; https also needs the system OpenSSL
 
 ## Requirements
 
-A jolt whose `jolt.host` exposes the telemetry primitives (`wall-nanos`,
-`mono-nanos`, the gc and memory counters). These are
-[jolt-lang/jolt#514](https://github.com/jolt-lang/jolt/pull/514) and are **not
-in any jolt release yet** — until it merges, build jolt from a checkout of that
-branch.
+jolt v0.5.17 or newer, for the `jolt.host` telemetry primitives (`wall-nanos`,
+`mono-nanos`, the gc and memory counters).
 
 The SDK checks at startup and says so plainly if the primitives are missing. It
 will not silently fall back to a millisecond clock: that is the exact defect the
@@ -118,7 +115,7 @@ so nothing sensitive belongs in it.
 | `:sampler` | `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | parent-based, always on |
 | `:endpoint` | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` |
 | `:headers` | `OTEL_EXPORTER_OTLP_HEADERS` | none |
-| `:exporter` | — | `:otlp` (also `:console`, `:json`, `:none`) |
+| `:exporter` | — | `:otlp` (also `:console`, `:json`, `:none`, or an exporter instance) |
 | `:processor` | — | `:batch` (also `:simple`) |
 | `:metrics?` / `:runtime-metrics?` | — | true |
 | `:metric-interval-ms` | — | 60000 |
@@ -126,6 +123,11 @@ so nothing sensitive belongs in it.
 | `:insecure?` | — | false (skip TLS verification) |
 | — | `OTEL_SDK_DISABLED=true` | installs nothing |
 | — | `OTEL_RESOURCE_ATTRIBUTES` | merged into the resource |
+
+An `:exporter` may also be an exporter instance, which is used for whichever
+signals it implements — handing `init!` a `memory/exporter` collects spans in a
+test without metrics reaching the network. An unrecognised value is an error
+rather than a silent fall back to OTLP.
 
 Samplers, processors and exporters can also be built directly and passed to
 `otel.sdk.tracer/tracer-provider` when `init!` is too opinionated.

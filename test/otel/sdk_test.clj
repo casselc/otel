@@ -3,6 +3,7 @@
             [clojure.string :as str]
             [clojure.tools.logging :as log]
             [clojure.tools.logging.impl :as impl]
+            [otel.exporter.memory :as mem]
             [otel.logs :as logs]
             [otel.metrics :as metrics]
             [otel.resource :as res]
@@ -114,3 +115,40 @@
       (trace/with-span [sp (sdk/tracer "s") "printed-span"])
       (is (sdk/force-flush! handle))
       (finally (sdk/shutdown! handle)))))
+
+(deftest an-exporter-instance-can-be-handed-to-init
+  (let [exp (mem/exporter)
+        handle (sdk/init! {:exporter exp :processor :simple :metrics? false})]
+    (try
+      (trace/with-span [sp (sdk/tracer "s") "instance-span"])
+      (is (sdk/force-flush! handle))
+      (is (= ["instance-span"] (mapv :name (mem/spans exp))))
+      (finally (sdk/shutdown! handle)))))
+
+(deftest a-span-only-exporter-instance-does-not-become-a-metric-exporter
+  (let [exp (mem/exporter)
+        handle (sdk/init! {:exporter exp :processor :simple})]
+    (try
+      (is (some? (sdk/meter-provider)))
+      (is (nil? (:reader handle)))
+      (finally (sdk/shutdown! handle)))))
+
+(deftest a-metric-exporter-instance-is-used-for-metrics
+  (let [exp (mem/metric-exporter)
+        handle (sdk/init! {:exporter exp :metric-interval-ms 0})]
+    (try
+      (let [c (metrics/counter (sdk/meter "m") "hits")]
+        (metrics/add! c 1)
+        (is (sdk/force-flush! handle))
+        (is (pos? (count (mem/collections exp)))))
+      (finally (sdk/shutdown! handle)))))
+
+(deftest an-unknown-exporter-keyword-is-rejected
+  (is (thrown? Exception (sdk/init! {:exporter :memroy})))
+  (testing "the message names what was passed and what is valid"
+    (try
+      (sdk/init! {:exporter :memroy})
+      (is false "expected a throw")
+      (catch :default e
+        (is (str/includes? (ex-message e) ":memroy"))
+        (is (str/includes? (ex-message e) ":otlp"))))))

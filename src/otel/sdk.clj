@@ -93,24 +93,46 @@
 (defn- disabled? []
   (= "true" (some-> (env "OTEL_SDK_DISABLED") str/trim str/lower-case)))
 
-(defn- build-span-exporter [exporter-kind opts]
-  (case exporter-kind
+(def ^:private exporter-kinds #{:otlp :console :json :none})
+
+(defn- check-exporter
+  "`:exporter` is a kind or an exporter instance. Anything else is a mistake --
+  a typo used to fall through to OTLP, so telemetry silently went to
+  localhost:4318 instead of where it was asked to go."
+  [exporter]
+  (when-not (or (contains? exporter-kinds exporter)
+                (satisfies? export/SpanExporter exporter)
+                (satisfies? export/MetricExporter exporter)
+                (satisfies? sdk-logs/LogRecordExporter exporter))
+    (throw (ex-info (str "unknown :exporter " (pr-str exporter)
+                         " -- expected one of " (str/join ", " (sort (map str exporter-kinds)))
+                         ", or an exporter instance")
+                    {:exporter exporter :kinds exporter-kinds})))
+  exporter)
+
+;; An instance is used for whichever signals it actually implements; the others
+;; get no exporter rather than quietly falling back to the network.
+(defn- build-span-exporter [exporter opts]
+  (case exporter
     :none nil
     :console (stdout/exporter {})
     :json (stdout/json-exporter {})
-    (otlp/exporter opts)))
+    :otlp (otlp/exporter opts)
+    (when (satisfies? export/SpanExporter exporter) exporter)))
 
-(defn- build-metric-exporter [exporter-kind opts]
-  (case exporter-kind
+(defn- build-metric-exporter [exporter opts]
+  (case exporter
     :none nil
     (:console :json) (stdout/metric-exporter {})
-    (otlp/metric-exporter opts)))
+    :otlp (otlp/metric-exporter opts)
+    (when (satisfies? export/MetricExporter exporter) exporter)))
 
-(defn- build-log-exporter [exporter-kind opts]
-  (case exporter-kind
+(defn- build-log-exporter [exporter opts]
+  (case exporter
     :none nil
     (:console :json) (stdout/log-exporter {})
-    (otlp/log-exporter opts)))
+    :otlp (otlp/log-exporter opts)
+    (when (satisfies? sdk-logs/LogRecordExporter exporter) exporter)))
 
 (defn init!
   "Configure and install a tracing (and, unless disabled, metrics) SDK.
@@ -121,7 +143,10 @@
     :service-name     sets service.name (OTEL_SERVICE_NAME)
     :resource         a resource merged over the detected defaults
     :sampler          a sampler (OTEL_TRACES_SAMPLER / _ARG)
-    :exporter         :otlp (default), :console, :json, or :none
+    :exporter         :otlp (default), :console, :json, :none, or an exporter
+                      instance -- which is used for whichever signals it
+                      implements, so a memory exporter in a test collects spans
+                      without metrics reaching the network
     :endpoint         OTLP base endpoint (OTEL_EXPORTER_OTLP_ENDPOINT)
     :headers          extra OTLP request headers
     :processor        :batch (default) or :simple
@@ -140,6 +165,7 @@
      :or {exporter :otlp processor :batch metrics? true runtime-metrics? true
           logs? false bridge-logging? true}
      :as opts}]
+   (check-exporter exporter)
    (if (disabled?)
      {:disabled? true}
      (let [base (res/merge-resources
