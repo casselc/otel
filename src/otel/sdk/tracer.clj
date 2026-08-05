@@ -19,7 +19,13 @@
 (defrecord SdkTracer [provider scope]
   trace/Tracer
   (start-span* [_ name opts]
-    (let [{:keys [resource sampler limits clock processor shutdown?]} provider]
+    (let [{:keys [resource sampler limits clock processor shutdown?]} provider
+          ;; A provider built directly through the historical six-argument
+          ;; record constructor has no extension-map entry. Preserve that public
+          ;; construction path by applying the production default at use time.
+          id-generator (if (nil? (:id-generator provider))
+                         id/default-id-generator
+                         (:id-generator provider))]
       (if @shutdown?
         ;; After shutdown nothing can be exported, so a span would only cost
         ;; memory. It still propagates: a non-recording span keeps the trace
@@ -29,8 +35,26 @@
               parent-sc (trace/span-context-of (trace/span-from-context parent-ctx))
               parent? (trace/valid? parent-sc)
               ;; A child stays in its parent's trace; a root starts a new one.
-              trace-id (if parent? (:trace-id parent-sc) (id/trace-id))
-              span-id (id/span-id)
+              ;; Every span id comes from the provider's generator, so a
+              ;; deterministic generator makes a whole run reproducible.
+              trace-id (if parent?
+                         (:trace-id parent-sc)
+                         (let [generated (id/generate-trace-id id-generator)]
+                           (when-not (id/valid-trace-id? generated)
+                             (throw
+                              (ex-info "OTel id generator returned an invalid trace id"
+                                       {:type ::invalid-generated-id
+                                        :id-kind :trace
+                                        :value generated})))
+                           generated))
+              span-id (let [generated (id/generate-span-id id-generator)]
+                        (when-not (id/valid-span-id? generated)
+                          (throw
+                           (ex-info "OTel id generator returned an invalid span id"
+                                    {:type ::invalid-generated-id
+                                     :id-kind :span
+                                     :value generated})))
+                        generated)
               kind (:kind opts :internal)
               links (vec (:links opts))
               decision (sampler/should-sample
@@ -84,17 +108,32 @@
                  but go nowhere)
     :limits      per-span limits, see `otel.sdk.span/default-limits`
     :clock       the clock to time spans with (default the system clock)
+    :id-generator  where trace and span ids come from (default
+                 `id/default-id-generator`, OS entropy — pass a deterministic
+                 `id/IdGenerator` to make a run reproducible)
 
   The clock is anchored: timestamps stay epoch-based, but every interval within
   the process comes from the monotonic clock, so a wall-clock step cannot produce
   a span that ends before it started."
-  [{:keys [resource sampler processors limits clock]}]
-  (->SdkTracerProvider (or resource (res/default-resource))
-                       (or sampler sampler/default-sampler)
-                       (span/span-limits limits)
-                       (clock/anchored (or clock clock/system))
-                       (export/composite-processor (or processors []))
-                       (atom false)))
+  [{:keys [resource sampler processors limits clock id-generator]}]
+  (let [id-generator (if (nil? id-generator)
+                       id/default-id-generator
+                       id-generator)]
+    (when-not (satisfies? id/IdGenerator id-generator)
+      (throw
+       (ex-info "OTel tracer provider requires an IdGenerator"
+                {:type ::invalid-id-generator
+                 :value-class (str (class id-generator))})))
+    ;; Keep SdkTracerProvider's historical six-argument record constructor
+    ;; source-compatible. The new optional field lives in the record extmap.
+    (assoc
+     (->SdkTracerProvider (or resource (res/default-resource))
+                          (or sampler sampler/default-sampler)
+                          (span/span-limits limits)
+                          (clock/anchored (or clock clock/system))
+                          (export/composite-processor (or processors []))
+                          (atom false))
+     :id-generator id-generator)))
 
 (defn get-tracer
   "A tracer for one instrumentation scope. `:name` identifies the instrumenting

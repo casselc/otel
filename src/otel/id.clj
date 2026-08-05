@@ -101,3 +101,28 @@
   (loop []
     (let [s (random-hex 8)]
       (if (= s invalid-span-id) (recur) s))))
+
+;; --- the injectable generator seam ------------------------------------------
+
+(defprotocol IdGenerator
+  "Generates the trace and span ids a tracer provider stamps onto new spans.
+
+  The default implementation draws from OS entropy, exactly as `trace-id` and
+  `span-id` always have. A deterministic implementation — owned by a replay or
+  simulation layer, not this library — can supply fixed or seeded ids so a run
+  reproduces byte-for-byte. Whatever a generator returns must still be a valid
+  id: the all-zero value stays reserved for \"absent\"."
+  (generate-trace-id [generator]
+    "A fresh trace id: 32 lowercase hex characters, never all-zero.")
+  (generate-span-id [generator]
+    "A fresh span id: 16 lowercase hex characters, never all-zero."))
+
+(defrecord OsEntropyIdGenerator []
+  IdGenerator
+  (generate-trace-id [_] (trace-id))
+  (generate-span-id [_] (span-id)))
+
+(def default-id-generator
+  "The default id generator: OS entropy, the same ids `trace-id` and `span-id`
+  have always produced. `tracer-provider` uses this unless given another."
+  (->OsEntropyIdGenerator))

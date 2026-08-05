@@ -238,6 +238,103 @@
       (is (= (trace/span-context-of sp) (trace/current-span-context))))
     (is (not (trace/valid? (trace/current-span-context))))))
 
+;; --- id generator -----------------------------------------------------------
+
+(defn- seq-id-generator
+  "An IdGenerator that hands out `trace-ids` and `span-ids` in order — the
+  deterministic stand-in for a seeded replay generator."
+  [trace-ids span-ids]
+  (let [t (atom trace-ids)
+        s (atom span-ids)
+        calls (atom [])]
+    {:calls calls
+     :generator
+     (reify id/IdGenerator
+       (generate-trace-id [_]
+         (swap! calls conj :trace)
+         (let [[x & xs] @t] (reset! t xs) x))
+       (generate-span-id [_]
+         (swap! calls conj :span)
+         (let [[x & xs] @s] (reset! s xs) x)))}))
+
+(defn- ex-data-of [f]
+  (try (f) nil (catch :default error (ex-data error))))
+
+(deftest a-provider-uses-its-id-generator-for-root-ids
+  (let [{:keys [generator calls]}
+        (seq-id-generator ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+                          ["1111111111111111"])
+        {:keys [tracer exporter]} (setup {:id-generator generator})]
+    (trace/with-span [sp tracer "root"])
+    (let [s (first (memory/spans exporter))]
+      (is (= "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" (get-in s [:span-context :trace-id])))
+      (is (= "1111111111111111" (get-in s [:span-context :span-id])))
+      (is (= [:trace :span] @calls)))))
+
+(deftest a-child-inherits-the-parent-trace-id-and-gets-its-own-span-id
+  (let [{:keys [generator calls]}
+        (seq-id-generator ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+                          ["1111111111111111" "2222222222222222"])
+        {:keys [tracer exporter]} (setup {:id-generator generator})]
+    (trace/with-span [outer tracer "outer"]
+      (trace/with-span [inner tracer "inner"]))
+    (let [spans (memory/spans exporter)
+          inner (first (filter #(= "inner" (:name %)) spans))
+          outer (first (filter #(= "outer" (:name %)) spans))]
+      (is (= "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" (get-in outer [:span-context :trace-id])))
+      (is (= "1111111111111111" (get-in outer [:span-context :span-id])))
+      (is (= "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" (get-in inner [:span-context :trace-id]))
+          "a child stays in its parent's trace — the generator is not consulted for the trace id")
+      (is (= "2222222222222222" (get-in inner [:span-context :span-id])))
+      (is (= "1111111111111111" (:parent-span-id inner)))
+      (is (= [:trace :span :span] @calls)
+          "the child must not consume a trace id that it then discards"))))
+
+(deftest the-provider-defaults-to-the-os-entropy-generator
+  (let [{:keys [provider]} (setup)]
+    (is (instance? id/OsEntropyIdGenerator (:id-generator provider)))))
+
+(deftest the-historical-record-constructor-retains-the-default-generator
+  (let [provider (sdk/->SdkTracerProvider
+                  (res/resource {:service.name "legacy"})
+                  sampler/default-sampler
+                  nil
+                  (clock/anchored (clock/fake-clock))
+                  (export/composite-processor [])
+                  (atom false))
+        tracer (sdk/get-tracer provider {:name "legacy"})
+        sp (trace/start-span tracer "legacy")]
+    (is (trace/valid? (trace/span-context-of sp)))
+    (trace/end! sp)))
+
+(deftest invalid-generator-configuration-fails-at-provider-construction
+  (doseq [invalid [false {} (fn [] "not a protocol")]]
+    (is (= :otel.sdk.tracer/invalid-id-generator
+           (:type (ex-data-of #(setup {:id-generator invalid})))))))
+
+(deftest invalid-generated-ids-fail-closed
+  (doseq [[trace-ids span-ids expected-kind]
+          [[id/invalid-trace-id "1111111111111111" :trace]
+           ["AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" "1111111111111111" :trace]
+           ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" id/invalid-span-id :span]
+           ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" "short" :span]]]
+    (let [{:keys [generator]} (seq-id-generator [trace-ids] [span-ids])
+          {:keys [tracer]} (setup {:id-generator generator})
+          data (ex-data-of #(trace/start-span tracer "invalid"))]
+      (is (= :otel.sdk.tracer/invalid-generated-id (:type data)))
+      (is (= expected-kind (:id-kind data))))))
+
+(deftest a-child-validates-its-generated-span-id
+  (let [{:keys [generator]}
+        (seq-id-generator ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+                          ["1111111111111111" id/invalid-span-id])
+        {:keys [tracer]} (setup {:id-generator generator})
+        data (atom nil)]
+    (trace/with-span [outer tracer "outer"]
+      (reset! data (ex-data-of #(trace/start-span tracer "invalid-child"))))
+    (is (= :otel.sdk.tracer/invalid-generated-id (:type @data)))
+    (is (= :span (:id-kind @data)))))
+
 ;; --- sampling ---------------------------------------------------------------
 
 (deftest a-dropped-span-is-not-exported
