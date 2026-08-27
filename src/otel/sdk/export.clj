@@ -118,8 +118,14 @@
                  (update s :queue conj span)))))
     nil)
   (force-flush! [_]
-    (boolean (and (drain! exporter state (:max-export-batch-size config))
-                  (flush-exporter! exporter))))
+    ;; The worker may already have removed a batch from :queue while its export
+    ;; is still in flight. Serializing every drain makes acquiring this monitor
+    ;; the completion barrier for that batch; checking an empty queue alone is
+    ;; not sufficient. Using the atom object only as a monitor still leaves its
+    ;; lock-free swap path available to nonblocking producers.
+    (locking state
+      (boolean (and (drain! exporter state (:max-export-batch-size config))
+                    (flush-exporter! exporter)))))
   (shutdown! [this]
     ;; Mark shutdown first so nothing new is queued, then drain what is already
     ;; there — a span that was recorded before shutdown should still be exported.
@@ -154,7 +160,8 @@
                       (sleep-until-due state (:schedule-delay-ms config))
                       ;; Drain unconditionally, including on the way out: spans
                       ;; ended just before shutdown must still be exported.
-                      (drain! exporter state (:max-export-batch-size config))
+                      (locking state
+                        (drain! exporter state (:max-export-batch-size config)))
                       (when-not (:shutdown? @state) (recur)))))]
      ;; A daemon thread: a background exporter must never be the reason a process
      ;; refuses to exit.

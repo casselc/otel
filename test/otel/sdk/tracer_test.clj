@@ -27,6 +27,17 @@
       :exporter exporter
       :clock fake})))
 
+(defrecord BlockingSpanExporter [entered release exported?]
+  export/SpanExporter
+  (export-spans! [_ _]
+    ;; Entry is after BatchSpanProcessor has removed the batch from its queue.
+    (deliver entered true)
+    @release
+    (reset! exported? true)
+    true)
+  (flush-exporter! [_] true)
+  (shutdown-exporter! [_] true))
+
 ;; --- basic recording --------------------------------------------------------
 
 (deftest a-finished-span-reaches-the-exporter
@@ -374,6 +385,37 @@
       (export/force-flush! proc)
       (is (= 3 (count (memory/spans exporter))))
       (finally (export/shutdown! proc)))))
+
+(deftest batch-force-flush-waits-for-an-in-flight-worker-export
+  (let [entered (promise)
+        release (promise)
+        exported? (atom false)
+        exporter (->BlockingSpanExporter entered release exported?)
+        proc (export/batch-processor exporter {:schedule-delay-ms 1})
+        provider (sdk/tracer-provider {:processors [proc] :resource res/empty-resource})
+        tracer (sdk/get-tracer provider {:name "s"})
+        flush-started (promise)
+        flush-done (promise)
+        flush-thread (Thread. (fn []
+                                (deliver flush-started true)
+                                (deliver flush-done (export/force-flush! proc))))]
+    (try
+      (trace/with-span [sp tracer "in-flight"])
+      (is (= true (deref entered 2000 ::timeout))
+          "the scheduled worker must enter the exporter")
+      (is (zero? (export/queue-size proc))
+          "the worker has dequeued the span before exporter I/O completes")
+      (.start flush-thread)
+      (is (= true (deref flush-started 2000 ::timeout)))
+      (is (= ::timeout (deref flush-done 100 ::timeout))
+          "force-flush must not return while the dequeued export is blocked")
+      (deliver release true)
+      (is (= true (deref flush-done 2000 ::timeout)))
+      (is @exported?)
+      (finally
+        (deliver release true)
+        (try (.join flush-thread 2000) (catch :default _ nil))
+        (export/shutdown! proc)))))
 
 (deftest batch-processor-exports-in-batches
   (let [exporter (memory/exporter)

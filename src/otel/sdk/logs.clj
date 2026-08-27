@@ -75,7 +75,12 @@
                (update s :dropped inc)
                (update s :queue conj record))))
     nil)
-  (force-flush! [_] (boolean (drain! exporter state (:max-export-batch-size config))))
+  (force-flush! [_]
+    ;; A batch disappears from :queue before exporter I/O finishes. The shared
+    ;; drain monitor turns force-flush into a completion barrier for a worker's
+    ;; already-dequeued batch as well as for records still in the queue.
+    (locking state
+      (boolean (drain! exporter state (:max-export-batch-size config)))))
   (shutdown! [this]
     (swap! state assoc :shutdown? true)
     (export/force-flush! this)
@@ -98,7 +103,8 @@
                           (let [slice (min 50 remaining)]
                             (Thread/sleep slice)
                             (recur (- remaining slice)))))
-                      (drain! exporter state (:max-export-batch-size config))
+                      (locking state
+                        (drain! exporter state (:max-export-batch-size config)))
                       (when-not (:shutdown? @state) (recur)))))]
      (.setDaemon worker true)
      (.start worker)

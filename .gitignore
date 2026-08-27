@@ -1,3 +1,4 @@
 .cpcache/
+.jolt/
 target/
 .DS_Store

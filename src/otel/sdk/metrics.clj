@@ -272,7 +272,12 @@
   ;; shut down and flushed through the same calls a provider already makes.
   (on-start [_ _ _] nil)
   (on-end [_ _] nil)
-  (force-flush! [_] (boolean (collect-and-export! provider exporter)))
+  (force-flush! [_]
+    ;; Interval collection and force-flush both mutate delta aggregation state.
+    ;; Serialize the entire collect/export operation so a flush also waits for
+    ;; exporter I/O already started by the worker.
+    (locking state
+      (boolean (collect-and-export! provider exporter))))
   (shutdown! [this]
     (swap! state assoc :shutdown? true)
     (export/force-flush! this)
@@ -300,7 +305,8 @@
                             (Thread/sleep slice)
                             (recur (- remaining slice)))))
                       (when-not (:shutdown? @state)
-                        (collect-and-export! provider exporter)
+                        (locking state
+                          (collect-and-export! provider exporter))
                         (recur)))))]
      (.setDaemon worker true)
      (.start worker)

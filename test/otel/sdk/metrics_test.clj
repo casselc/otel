@@ -4,6 +4,7 @@
             [otel.metrics :as api]
             [otel.resource :as res]
             [otel.sdk.clock :as clock]
+            [otel.sdk.export :as export]
             [otel.sdk.metrics :as sdk]))
 
 (defn- setup
@@ -19,6 +20,17 @@
 
 (defn- point-for [metric attrs]
   (first (filter #(= attrs (:attributes %)) (:data-points metric))))
+
+(defrecord BlockingMetricExporter [entered release calls]
+  export/MetricExporter
+  (export-metrics! [_ _ _]
+    ;; Only the scheduled worker's first export blocks. A concurrent flush on
+    ;; the old implementation would enter a second export and return early.
+    (when (= 1 (swap! calls inc))
+      (deliver entered true)
+      @release)
+    true)
+  (shutdown-metric-exporter! [_] true))
 
 ;; --- counters ---------------------------------------------------------------
 
@@ -191,6 +203,38 @@
     (api/add! (api/counter m2 "b") 1)
     (let [collected (sdk/collect! provider)]
       (is (= #{"lib-a" "lib-b"} (set (map #(get-in % [:scope :name]) collected)))))))
+
+;; --- periodic reader synchronization ---------------------------------------
+
+(deftest metric-force-flush-waits-for-an-in-flight-periodic-export
+  (let [{:keys [provider meter]} (setup)
+        counter (api/counter meter "requests")
+        entered (promise)
+        release (promise)
+        calls (atom 0)
+        exporter (->BlockingMetricExporter entered release calls)
+        reader (sdk/periodic-reader provider exporter {:interval-ms 1})
+        flush-started (promise)
+        flush-done (promise)
+        flush-thread (Thread. (fn []
+                                (deliver flush-started true)
+                                (deliver flush-done (export/force-flush! reader))))]
+    (try
+      (api/add! counter 1)
+      (is (= true (deref entered 2000 ::timeout))
+          "the periodic reader must enter the exporter")
+      (.start flush-thread)
+      (is (= true (deref flush-started 2000 ::timeout)))
+      (is (= ::timeout (deref flush-done 100 ::timeout))
+          "force-flush must wait for periodic exporter I/O already in flight")
+      (deliver release true)
+      (is (= true (deref flush-done 2000 ::timeout)))
+      (is (>= @calls 2)
+          "the explicit flush collects after the scheduled export completes")
+      (finally
+        (deliver release true)
+        (try (.join flush-thread 2000) (catch :default _ nil))
+        (export/shutdown! reader)))))
 
 ;; --- no-op API --------------------------------------------------------------
 

@@ -23,6 +23,16 @@
      :provider provider
      :logger (sdk-logs/get-logger provider {:name "scope" :version "1.0"})}))
 
+(defrecord BlockingLogExporter [entered release exported?]
+  sdk-logs/LogRecordExporter
+  (export-logs! [_ _]
+    ;; Entry is after BatchLogProcessor has removed the batch from its queue.
+    (deliver entered true)
+    @release
+    (reset! exported? true)
+    true)
+  (shutdown-log-exporter! [_] true))
+
 ;; --- severity ---------------------------------------------------------------
 
 (deftest severity-numbers-follow-the-spec-ranges
@@ -112,6 +122,37 @@
       (sdk-logs/force-flush! provider)
       (is (= 3 (count (memory/records exporter))))
       (finally (sdk-logs/shutdown! provider)))))
+
+(deftest batch-force-flush-waits-for-an-in-flight-worker-export
+  (let [entered (promise)
+        release (promise)
+        exported? (atom false)
+        exporter (->BlockingLogExporter entered release exported?)
+        proc (sdk-logs/batch-processor exporter {:schedule-delay-ms 1})
+        provider (sdk-logs/logger-provider {:resource res/empty-resource :processors [proc]})
+        logger (sdk-logs/get-logger provider {:name "s"})
+        flush-started (promise)
+        flush-done (promise)
+        flush-thread (Thread. (fn []
+                                (deliver flush-started true)
+                                (deliver flush-done (export/force-flush! proc))))]
+    (try
+      (logs/emit! logger {:body "in-flight" :severity :info})
+      (is (= true (deref entered 2000 ::timeout))
+          "the scheduled worker must enter the exporter")
+      (is (empty? (:queue @(:state proc)))
+          "the worker has dequeued the log before exporter I/O completes")
+      (.start flush-thread)
+      (is (= true (deref flush-started 2000 ::timeout)))
+      (is (= ::timeout (deref flush-done 100 ::timeout))
+          "force-flush must not return while the dequeued export is blocked")
+      (deliver release true)
+      (is (= true (deref flush-done 2000 ::timeout)))
+      (is @exported?)
+      (finally
+        (deliver release true)
+        (try (.join flush-thread 2000) (catch :default _ nil))
+        (sdk-logs/shutdown! provider)))))
 
 (deftest batch-processor-drops-when-full
   (let [exporter (memory/log-exporter)
