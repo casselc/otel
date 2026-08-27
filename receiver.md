@@ -1,7 +1,15 @@
 # OTLP trace receiver seam
 
-`otel.otlp.trace-decode/decode-request` is the reusable data boundary for an
-eventual OTLP/HTTP receiver. It accepts an already parsed JSON-compatible map
+`otel.otlp.http-receiver/handler` is the reusable Ring boundary for an
+OTLP/HTTP JSON trace receiver. It owns request policy but not sockets, JSON
+parsing, threads, authentication, or storage. A caller supplies a body parser
+that reports the actual encoded byte count and an
+`otel.sdk.export/SpanExporter`; the resulting handler enforces
+`POST /v1/traces`, JSON content type, the encoded-body cap, and bounded
+concurrency. A host may supply a timeout wrapper for its own bounded executor.
+
+`otel.otlp.trace-decode/decode-request` is the reusable data boundary beneath
+the Ring adapter. It accepts an already parsed JSON-compatible map
 with the JSON-Protobuf `ExportTraceServiceRequest` shape and returns:
 
 ```clojure
@@ -18,8 +26,8 @@ count represented by those values. One bad span is rejected without discarding
 valid sibling spans. Container errors reject the spans contained by that
 container when they can be counted.
 
-This namespace is deliberately not an HTTP server and not a JSON parser. The
-next receiver layer owns, in this order:
+Neither namespace is an HTTP server or JSON parser. The complete receiver
+stack owns, in this order:
 
 1. Authenticate and authorize the request before buffering or parsing it.
 2. Accept only `POST /v1/traces` and `Content-Type: application/json` (ignoring
@@ -33,8 +41,9 @@ next receiver layer owns, in this order:
    `:rejected-spans` to the standard JSON response
    `{"partialSuccess":{"rejectedSpans":"N","errorMessage":"..."}}`.
    Receiver/exporter failures remain HTTP failures rather than partial success.
-6. Bound concurrency and exporter time. Exclude or separately mark the receiver
-   endpoint's own telemetry to prevent an ingest-observe-ingest feedback loop.
+6. Bound concurrency and exporter time. `wrap-suppress-receiver-telemetry` and
+   `telemetry-suppressed?` form the explicit outer-middleware contract that
+   prevents an ingest-observe-ingest feedback loop.
 
 The initial decoder does not accept a JSON string because this project has no
 explicit safe JSON-reader dependency. It also rejects AnyValue `kvlistValue`

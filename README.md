@@ -213,6 +213,8 @@ rather than being posted to as if it were HTTP.
 
 ### Receiver seam
 
+`otel.otlp.http-receiver/handler` builds a pure Ring adapter for
+`POST /v1/traces`; callers provide bounded JSON parsing and a span exporter.
 `otel.otlp.trace-decode/decode-request` decodes an already parsed OTLP/JSON
 `ExportTraceServiceRequest` into the same immutable ended-span maps consumed by
 the exporters. It isolates invalid individual spans and returns path-aware
@@ -239,6 +241,7 @@ feedback-loop guard, and current lossless-decoding limits.
 - `otel.sdk.metrics`, `otel.sdk.logs`, `otel.sdk.clock`, `otel.id`
 - `otel.bridge.tools-logging` — the clojure.tools.logging appender
 - `otel.otlp.trace-decode` — transport-neutral strict OTLP/JSON trace decoding
+- `otel.otlp.http-receiver` — bounded Ring policy and exporter adapter
 
 **Exporters** — `otel.exporter.otlp`, `otel.exporter.stdout`,
 `otel.exporter.memory` (for tests).
