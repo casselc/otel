@@ -15,6 +15,39 @@
          "startTimeUnixNano" "1"
          "endTimeUnixNano" "2"}]}]}]})
 
+(def valid-logs-wire
+  {"resourceLogs"
+   [{"resource" {"attributes" [{"key" "service.name"
+                                  "value" {"stringValue" "receiver-test"}}]}
+     "scopeLogs"
+     [{"scope" {"name" "test.logs"}
+       "logRecords"
+       [{"timeUnixNano" "10" "observedTimeUnixNano" "11"
+         "severityNumber" 9 "severityText" "INFO"
+         "body" {"stringValue" "hello"}
+         "traceId" "11111111111111111111111111111111"
+         "spanId" "2222222222222222"}]}]}]})
+
+(def valid-metrics-wire
+  {"resourceMetrics"
+   [{"resource" {"attributes" [{"key" "service.name"
+                                  "value" {"stringValue" "receiver-test"}}]}
+     "scopeMetrics"
+     [{"scope" {"name" "test.metrics"}
+       "metrics"
+       [{"name" "temperature"
+         "gauge" {"dataPoints" [{"timeUnixNano" "20" "asDouble" 21.5}]}}
+        {"name" "requests"
+         "sum" {"aggregationTemporality" 2 "isMonotonic" true
+                "dataPoints" [{"startTimeUnixNano" "1" "timeUnixNano" "20"
+                               "asInt" "4"}]}}
+        {"name" "latency"
+         "histogram" {"aggregationTemporality" 1
+                      "dataPoints" [{"startTimeUnixNano" "1" "timeUnixNano" "20"
+                                     "count" "2" "sum" 7.0
+                                     "bucketCounts" ["1" "1"]
+                                     "explicitBounds" [5.0]}]}}]}]}]})
+
 (defn- parser
   ([request _limit]
    {:value (:body request) :encoded-bytes (or (:encoded-bytes request) 1)}))
@@ -165,19 +198,118 @@
     (wrapped (request))
     (is (true? @seen))))
 
+(deftest routes-and-isolates-all-modeled-signals
+  (let [span-batches (atom []) log-batches (atom []) metric-batches (atom [])
+        h (receiver/handler
+           {:parse-body parser :exporter ::traces :log-exporter ::logs
+            :metric-exporter ::metrics
+            :export-spans! (fn [exporter spans]
+                             (swap! span-batches conj [exporter spans]) true)
+            :export-logs! (fn [exporter records]
+                            (swap! log-batches conj [exporter records]) true)
+            :export-metrics! (fn [exporter resource collected]
+                               (swap! metric-batches conj [exporter resource collected]) true)})]
+    (is (= 200 (:status (h (request)))))
+    (is (= 200 (:status (h (request {:uri receiver/logs-path :body valid-logs-wire})))))
+    (is (= 200 (:status (h (request {:uri receiver/metrics-path :body valid-metrics-wire})))))
+    (is (= [::traces] (mapv first @span-batches)))
+    (is (= [::logs] (mapv first @log-batches)))
+    (is (= [::metrics] (mapv first @metric-batches)))
+    (is (= ["hello"] (mapv :body (second (first @log-batches)))))
+    (let [metrics (-> @metric-batches first (nth 2) first :metrics)]
+      (is (= [:gauge :sum :histogram] (mapv :type metrics)))
+      (is (= 21.5 (-> metrics first :data-points first :value)))
+      (is (= 4 (-> metrics second :data-points first :value)))
+      (is (= [5.0] (-> metrics (nth 2) :explicit-bounds)))
+      (is (= [1 1] (-> metrics (nth 2) :data-points first :bucket-counts))))
+    (is (= 503 (:status ((receiver/handler
+                          {:parse-body parser :exporter ::traces})
+                         (request {:uri receiver/logs-path :body valid-logs-wire})))))))
+
+(deftest signal-specific-partial-success-fields
+  (let [logs (update-in valid-logs-wire ["resourceLogs" 0 "scopeLogs" 0 "logRecords"]
+                        conj {"body" {"stringValue" "bad"} "traceId" "bad"})
+        metrics (-> valid-metrics-wire
+                    (update-in ["resourceMetrics" 0 "scopeMetrics" 0 "metrics" 0
+                                "gauge" "dataPoints"]
+                               conj {"timeUnixNano" "21"})
+                    (update-in ["resourceMetrics" 0 "scopeMetrics" 0 "metrics"]
+                               conj {"name" "unsupported"
+                                     "summary" {"dataPoints" [{"count" "1"}]}}))
+        log-seen (atom []) metric-seen (atom [])
+        h (receiver/handler
+           {:parse-body parser :log-exporter ::logs :metric-exporter ::metrics
+            :export-logs! (fn [_ records] (reset! log-seen records) true)
+            :export-metrics! (fn [_ _ collected] (reset! metric-seen collected) true)})
+        log-response (h (request {:uri receiver/logs-path :body logs}))
+        metric-response (h (request {:uri receiver/metrics-path :body metrics}))]
+    (is (= 200 (:status log-response)))
+    (is (.contains (:body log-response) "rejectedLogRecords\":\"1"))
+    (is (not (.contains (:body log-response) "rejectedSpans")))
+    (is (= 1 (count @log-seen)))
+    (is (= 200 (:status metric-response)))
+    (is (.contains (:body metric-response) "rejectedDataPoints\":\"2"))
+    (is (not (.contains (:body metric-response) "rejectedLogRecords")))
+    (is (= [:gauge :sum :histogram] (mapv :type (-> @metric-seen first :metrics))))
+    (is (= 1 (count (-> @metric-seen first :metrics first :data-points))))))
+
+(deftest admission-and-timeout-are-shared-across-signals
+  (let [entered (promise) release (promise) logs (atom 0)
+        h (receiver/handler
+           {:parse-body parser :exporter ::traces :log-exporter ::logs
+            :max-concurrency 1
+            :export-spans! (fn [_ _] (deliver entered true) @release true)
+            :export-logs! (fn [_ _] (swap! logs inc) true)})
+        trace-response (promise)
+        thread (Thread. #(deliver trace-response (h (request))))]
+    (.start thread)
+    (is (= true (deref entered 2000 ::timeout)))
+    (is (= 429 (:status (h (request {:uri receiver/logs-path :body valid-logs-wire})))))
+    (deliver release true)
+    (is (= 200 (:status (deref trace-response 2000 nil))))
+    (is (= 200 (:status (h (request {:uri receiver/logs-path :body valid-logs-wire})))))
+    (is (= 1 @logs)))
+  (let [h (receiver/handler
+           {:parse-body parser :log-exporter ::logs :export-timeout-ms 5
+            :call-with-timeout (fn [ms _] (throw (receiver/export-timeout ms)))
+            :export-logs! (fn [_ _] true)})]
+    (is (= 504 (:status (h (request {:uri receiver/logs-path :body valid-logs-wire})))))
+    (is (= 504 (:status (h (request {:uri receiver/logs-path :body valid-logs-wire}))))
+        "timeout releases the shared admission slot")))
+
+(deftest suppression-covers-every-receiver-path
+  (let [seen (atom [])
+        wrapped (receiver/wrap-suppress-receiver-telemetry
+                 (fn [r] (swap! seen conj [(:uri r) (receiver/telemetry-suppressed? r)])
+                   {:status 204}))]
+    (doseq [path [receiver/traces-path receiver/logs-path receiver/metrics-path "/other"]]
+      (wrapped {:uri path}))
+    (is (= [[receiver/traces-path true] [receiver/logs-path true]
+            [receiver/metrics-path true] ["/other" false]] @seen))))
+
 (def methods (g/sampled-from [:post :get :put :delete]))
 (def content-types
   (g/sampled-from ["application/json" "application/json; charset=utf-8"
                    "text/plain" nil]))
+(def signal-paths
+  (g/sampled-from [receiver/traces-path receiver/logs-path receiver/metrics-path]))
 
 (deftest request-policy-property
   (with {:test-cases 100 :database "" :verbosity :quiet}
     [method methods
      content-type content-types
+     path signal-paths
      size (g/integer 0 32)
      limit (g/integer 1 32)]
-    (let [{h :handler} (recording-handler {:max-body-bytes limit})
+    (let [h (receiver/handler
+             {:parse-body parser :exporter ::traces :log-exporter ::logs
+              :metric-exporter ::metrics :max-body-bytes limit
+              :export-spans! (fn [_ _] true) :export-logs! (fn [_ _] true)
+              :export-metrics! (fn [_ _ _] true)})
+          body (case path receiver/logs-path valid-logs-wire
+                     receiver/metrics-path valid-metrics-wire valid-wire)
           response (h (request {:request-method method
+                                :uri path :body body
                                 :headers (cond-> {}
                                            content-type (assoc "content-type" content-type))
                                 :encoded-bytes size}))
@@ -217,3 +349,40 @@
         [(hs/invariant :only-accepted-requests-export
                        (fn [{:keys [accepted batches]}]
                          (= accepted (count @batches))))]}))))
+
+(deftest stateful-swarm-keeps-signal-exporters-isolated
+  (with {:test-cases 20 :stateful-step-count 24 :database "" :verbosity :quiet}
+    []
+    (let [calls (atom {:traces 0 :logs 0 :metrics 0})
+          h (receiver/handler
+             {:parse-body parser :exporter ::traces :log-exporter ::logs
+              :metric-exporter ::metrics :max-body-bytes 8
+              :export-spans! (fn [_ _] (swap! calls update :traces inc) true)
+              :export-logs! (fn [_ _] (swap! calls update :logs inc) true)
+              :export-metrics! (fn [_ _ _] (swap! calls update :metrics inc) true)})]
+      (hs/run!
+       {:initial-state {:traces 0 :logs 0 :metrics 0}
+        :rules
+        [(hs/rule :trace
+                  (fn [state]
+                    (is (= 200 (:status (h (request {:encoded-bytes 8})))))
+                    (update state :traces inc)))
+         (hs/rule :log
+                  (fn [state]
+                    (is (= 200 (:status (h (request {:uri receiver/logs-path
+                                                     :body valid-logs-wire
+                                                     :encoded-bytes 8})))))
+                    (update state :logs inc)))
+         (hs/rule :metric
+                  (fn [state]
+                    (is (= 200 (:status (h (request {:uri receiver/metrics-path
+                                                     :body valid-metrics-wire
+                                                     :encoded-bytes 8})))))
+                    (update state :metrics inc)))
+         (hs/rule :rejected-before-export
+                  (fn [state]
+                    (is (= 413 (:status (h (request {:uri receiver/logs-path
+                                                     :body valid-logs-wire
+                                                     :encoded-bytes 9})))))
+                    state))]
+        :invariants [(hs/invariant :exact-signal-delivery #(= % @calls))]}))))
