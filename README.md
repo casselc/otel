@@ -211,6 +211,16 @@ use it across an untrusted network.
 which exists on this host. A non-http(s) endpoint is rejected at construction
 rather than being posted to as if it were HTTP.
 
+### Receiver seam
+
+`otel.otlp.trace-decode/decode-request` decodes an already parsed OTLP/JSON
+`ExportTraceServiceRequest` into the same immutable ended-span maps consumed by
+the exporters. It isolates invalid individual spans and returns path-aware
+errors plus a rejected-span count suitable for an OTLP partial-success response.
+It intentionally owns no Ring, socket, JSON-reader, authentication, or storage
+dependency. See [receiver.md](receiver.md) for the HTTP boundary, caps,
+feedback-loop guard, and current lossless-decoding limits.
+
 ## Namespaces
 
 **API** — what instrumentation uses, and safe without an SDK:
@@ -228,6 +238,7 @@ rather than being posted to as if it were HTTP.
 - `otel.sdk.tracer`, `otel.sdk.span`, `otel.sdk.sampler`, `otel.sdk.export`
 - `otel.sdk.metrics`, `otel.sdk.logs`, `otel.sdk.clock`, `otel.id`
 - `otel.bridge.tools-logging` — the clojure.tools.logging appender
+- `otel.otlp.trace-decode` — transport-neutral strict OTLP/JSON trace decoding
 
 **Exporters** — `otel.exporter.otlp`, `otel.exporter.stdout`,
 `otel.exporter.memory` (for tests).

@@ -60,14 +60,19 @@
 (defn- event->otlp [e]
   (cond-> {:timeUnixNano (i64 (:timestamp-unix-nano e))
            :name (:name e)}
-    (seq (:attributes e)) (assoc :attributes (key-values (:attributes e)))))
+    (seq (:attributes e)) (assoc :attributes (key-values (:attributes e)))
+    (pos? (or (:dropped-attributes-count e) 0))
+    (assoc :droppedAttributesCount (:dropped-attributes-count e))))
 
 (defn- link->otlp [l]
   (let [sc (:span-context l)]
     (cond-> {:traceId (:trace-id sc)
              :spanId (:span-id sc)}
       (seq (:trace-state sc)) (assoc :traceState (trace-state-string (:trace-state sc)))
-      (seq (:attributes l)) (assoc :attributes (key-values (:attributes l))))))
+      (:trace-flags sc) (assoc :flags (:trace-flags sc))
+      (seq (:attributes l)) (assoc :attributes (key-values (:attributes l)))
+      (pos? (or (:dropped-attributes-count l) 0))
+      (assoc :droppedAttributesCount (:dropped-attributes-count l)))))
 
 (defn- status->otlp [status]
   (let [code (get status-codes (:code status) 0)]
@@ -101,10 +106,14 @@
 (defn- scope->otlp [scope]
   (cond-> {:name (or (:name scope) "")}
     (:version scope) (assoc :version (:version scope))
-    (seq (:attributes scope)) (assoc :attributes (key-values (:attributes scope)))))
+    (seq (:attributes scope)) (assoc :attributes (key-values (:attributes scope)))
+    (pos? (or (:dropped-attributes-count scope) 0))
+    (assoc :droppedAttributesCount (:dropped-attributes-count scope))))
 
 (defn- resource->otlp [resource]
-  {:attributes (key-values (res/attributes resource))})
+  (cond-> {:attributes (key-values (res/attributes resource))}
+    (pos? (or (:dropped-attributes-count resource) 0))
+    (assoc :droppedAttributesCount (:dropped-attributes-count resource))))
 
 (defn traces-request
   "A batch of SDK spans as an OTLP ExportTraceServiceRequest.

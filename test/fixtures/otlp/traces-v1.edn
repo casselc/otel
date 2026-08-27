@@ -1,0 +1,55 @@
+;; Representative ExportTraceServiceRequest JSON-Protobuf shape pinned to
+;; opentelemetry-proto dfd0b0e8974eac54c4d99a84a86d6098e11ad1bd:
+;; opentelemetry/proto/collector/trace/v1/trace_service.proto and
+;; opentelemetry/proto/trace/v1/trace.proto.
+{"resourceSpans"
+ [{"resource"
+   {"attributes"
+    [{"key" "service.name" "value" {"stringValue" "checkout"}}
+     {"key" "service.instance.id" "value" {"intValue" "42"}}]
+    "droppedAttributesCount" 2}
+   "schemaUrl" "https://opentelemetry.io/schemas/1.27.0"
+   "scopeSpans"
+   [{"scope"
+     {"name" "checkout.http"
+      "version" "3.1.4"
+      "attributes" [{"key" "scope.attr" "value" {"boolValue" true}}]
+      "droppedAttributesCount" 1}
+     "schemaUrl" "https://opentelemetry.io/schemas/1.26.0"
+     "spans"
+     [{"traceId" "11111111111111111111111111111111"
+       "spanId" "2222222222222222"
+       "parentSpanId" "3333333333333333"
+       "traceState" "vendor=opaque,other=value"
+       "flags" 257
+       "name" "GET /cart"
+       "kind" 2
+       "startTimeUnixNano" "1785609674781645000"
+       "endTimeUnixNano" "1785609674782645000"
+       "attributes"
+       [{"key" "http.request.method" "value" {"stringValue" "GET"}}
+        {"key" "retry.count" "value" {"intValue" "3"}}
+        {"key" "cache.hits"
+         "value" {"arrayValue" {"values" [{"intValue" "1"}
+                                                    {"intValue" "2"}]}}}]
+       "droppedAttributesCount" 4
+       "events"
+       [{"timeUnixNano" "1785609674782000000"
+         "name" "cache.miss"
+         "attributes" [{"key" "cache.key" "value" {"stringValue" "cart:42"}}]
+         "droppedAttributesCount" 5}]
+       "droppedEventsCount" 6
+       "links"
+       [{"traceId" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+         "spanId" "bbbbbbbbbbbbbbbb"
+         "traceState" "linkvendor=state"
+         "flags" 513
+         "attributes" [{"key" "link.type" "value" {"stringValue" "retry"}}]
+         "droppedAttributesCount" 7}]
+       "droppedLinksCount" 8
+       "status" {"code" 2 "message" "failed"}}
+      {"traceId" "11111111111111111111111111111111"
+       "spanId" "4444444444444444"
+       "name" "child"
+       "startTimeUnixNano" "1785609674781700000"
+       "endTimeUnixNano" "1785609674781800000"}]}]}]}
