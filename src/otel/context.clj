@@ -18,6 +18,16 @@
   "The empty context. Every propagation chain starts here."
   {})
 
+(def instrumentation-suppressed-key
+  "Context key used by telemetry infrastructure to prevent self-observation.
+
+  Exporters, receivers, storage adapters, and viewers bind this marker around
+  their own implementation work. Instrumentation libraries check
+  `instrumentation-suppressed?` before starting spans, logs, or metrics. The
+  marker lives in the ordinary propagation context so it follows the same
+  future/executor handoff rules as the active span."
+  ::instrumentation-suppressed?)
+
 (def ^:dynamic *current*
   "The active context on this thread. Read it with `current`, install one with
   `with-context`."
@@ -43,11 +53,29 @@
   [ctx k]
   (dissoc ctx k))
 
+(defn suppress-instrumentation
+  "Return `ctx` with generic auto-instrumentation suppression enabled."
+  [ctx]
+  (with-value ctx instrumentation-suppressed-key true))
+
+(defn instrumentation-suppressed?
+  "Whether generic auto-instrumentation is suppressed in `ctx`, or in the
+  current context when omitted."
+  ([] (instrumentation-suppressed? (current)))
+  ([ctx]
+   (true? (get-value ctx instrumentation-suppressed-key))))
+
 (defmacro with-context
   "Run `body` with `ctx` as the active context, restoring the previous one on the
   way out — including when `body` throws."
   [ctx & body]
   `(binding [*current* ~ctx] ~@body))
+
+(defmacro with-instrumentation-suppressed
+  "Run `body` with generic auto-instrumentation suppressed, preserving every
+  other current context value and restoring the caller context on all exits."
+  [& body]
+  `(with-context (suppress-instrumentation (current)) ~@body))
 
 (defn bind-fn*
   "Wrap `f` so it runs with `ctx` active, wherever and whenever it is later

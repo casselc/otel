@@ -64,3 +64,24 @@
         d (ctx/remove-value c :a)]
     (is (nil? (ctx/get-value d :a)))
     (is (= 2 (ctx/get-value d :b)))))
+
+(deftest instrumentation-suppression-is-contextual-and-nestable
+  (is (false? (ctx/instrumentation-suppressed?)))
+  (let [outer (ctx/with-value ctx/root :request-id "request-1")]
+    (ctx/with-context outer
+      (ctx/with-instrumentation-suppressed
+        (is (true? (ctx/instrumentation-suppressed?)))
+        (is (= "request-1" (ctx/get-value (ctx/current) :request-id)))
+        (ctx/with-instrumentation-suppressed
+          (is (true? (ctx/instrumentation-suppressed?)))))
+      (is (false? (ctx/instrumentation-suppressed?)))
+      (is (= "request-1" (ctx/get-value (ctx/current) :request-id)))))
+  (is (false? (ctx/instrumentation-suppressed?))))
+
+(deftest instrumentation-suppression-restores-on-throw-and-crosses-futures
+  (is (thrown? Exception
+               (ctx/with-instrumentation-suppressed
+                 (throw (ex-info "boom" {})))))
+  (is (false? (ctx/instrumentation-suppressed?)))
+  (ctx/with-instrumentation-suppressed
+    (is (true? @(future (ctx/instrumentation-suppressed?))))))
