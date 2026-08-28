@@ -143,6 +143,26 @@
         (is (pos? (count (mem/collections exp)))))
       (finally (sdk/shutdown! handle)))))
 
+(deftest memory-exporter-can-prove-all-three-signals-together
+  (let [exporter (mem/multisignal-exporter)
+        handle (sdk/init! {:exporter exporter :processor :simple
+                           :runtime-metrics? false :logs? true
+                           :bridge-logging? false})]
+    (try
+      (trace/with-span [_ (sdk/tracer "all-signals") "operation"]
+        (metrics/record! (metrics/histogram (sdk/meter "all-signals")
+                                            "operation.duration")
+                         0.25)
+        (logs/emit! (sdk/logger "all-signals")
+                    {:event-name "operation.exception"
+                     :body "operation exception" :severity :warn}))
+      (is (sdk/force-flush! handle))
+      (is (= ["operation"] (mapv :name (mem/spans exporter))))
+      (is (= ["operation.duration"] (mapv :name (mem/metrics exporter))))
+      (is (= ["operation.exception"]
+             (mapv :event-name (mem/records exporter))))
+      (finally (sdk/shutdown! handle)))))
+
 (deftest an-unknown-exporter-keyword-is-rejected
   (is (thrown? Exception (sdk/init! {:exporter :memroy})))
   (testing "the message names what was passed and what is valid"

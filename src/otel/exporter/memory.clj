@@ -25,6 +25,49 @@
   []
   (->InMemoryExporter (atom {:spans [] :batches [] :shutdown? false})))
 
+(defrecord InMemoryMultisignalExporter [state]
+  export/SpanExporter
+  (export-spans! [_ spans]
+    (if (:shutdown? @state)
+      false
+      (do (swap! state (fn [s] (-> s
+                                   (update :spans into spans)
+                                   (update :batches conj (vec spans)))))
+          true)))
+  (flush-exporter! [_] true)
+  (shutdown-exporter! [_] (swap! state assoc :shutdown? true) true)
+
+  export/MetricExporter
+  (export-metrics! [_ resource collected]
+    (if (:shutdown? @state)
+      false
+      (do (swap! state update :collections conj
+                 {:resource resource :collected collected})
+          true)))
+  (shutdown-metric-exporter! [_]
+    (swap! state assoc :shutdown? true)
+    true)
+
+  sdk-logs/LogRecordExporter
+  (export-logs! [_ records]
+    (if (:shutdown? @state)
+      false
+      (do (swap! state update :records into records) true)))
+  (shutdown-log-exporter! [_]
+    (swap! state assoc :shutdown? true)
+    true))
+
+(defn multisignal-exporter
+  "A single in-memory exporter implementing traces, metrics, and logs.
+
+  This is useful for integration tests that need to prove signal correlation
+  through `otel.sdk/init!`; ordinary signal-specific tests should keep using
+  `exporter`, `metric-exporter`, or `log-exporter`."
+  []
+  (->InMemoryMultisignalExporter
+   (atom {:spans [] :batches [] :collections [] :records []
+          :shutdown? false})))
+
 (defn spans
   "Every span handed to the exporter, in order."
   [e]
