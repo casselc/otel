@@ -9,6 +9,7 @@
             [otel.resource :as res]
             [otel.sdk :as sdk]
             [otel.sdk.metrics :as sdk-metrics]
+            [otel.sdk.tracer :as sdk-tracer]
             [otel.trace :as trace]))
 
 (defn- with-sdk [opts f]
@@ -67,6 +68,21 @@
     (let [t (sdk/tracer "my.lib")]
       (trace/with-span [sp t "op"]
         (is (not (trace/recording? sp)))))))
+
+(deftest hand-assembled-component-handles-are-rejected-before-shutdown
+  (let [calls (atom 0)
+        handle {:tracer-provider ::hand-assembled}
+        shutdown #(try
+                    (sdk/shutdown! handle)
+                    nil
+                    (catch :default throwable throwable))]
+    (with-redefs [sdk-tracer/shutdown! (fn [_] (swap! calls inc) true)]
+      (doseq [_ (range 2)]
+        (let [failure (shutdown)]
+          (is (= :invalid-shutdown-handle
+                 (:otel.sdk/error (ex-data failure))))
+          (is (= :terminal (:missing (ex-data failure))))))
+      (is (zero? @calls) "an invalid handle cannot run teardown even once"))))
 
 (deftest shutdown-clears-the-global-registry
   (let [handle (sdk/init! {:exporter :none})]
