@@ -15,7 +15,8 @@
                       must never block or crash the workload it is observing.
 
   An exporter is the thing that actually writes them somewhere."
-  (:require [otel.sdk.lifecycle :as lifecycle]
+  (:require [jolt.lifecycle :as jolt-lifecycle]
+            [otel.sdk.lifecycle :as lifecycle]
             [otel.trace :as trace]))
 
 (defprotocol SpanExporter
@@ -47,7 +48,7 @@
     (export-spans! exporter spans)
     (catch :default _ false)))
 
-(defrecord SimpleSpanProcessor [exporter state terminal]
+(defrecord SimpleSpanProcessor [exporter state shutdown-action]
   SpanProcessor
   (on-start [_ _ _] nil)
   (on-end [_ span]
@@ -59,18 +60,19 @@
         (export-quietly! exporter [span])))
     nil)
   (force-flush! [_] (boolean (flush-exporter! exporter)))
-  (shutdown! [_]
-    (lifecycle/run-terminal!
-      terminal
-      #(locking state
-         (swap! state assoc :shutdown? true)
-         (shutdown-exporter! exporter)))))
+  (shutdown! [_] (shutdown-action)))
 
 (defn simple-processor
   "Export each span as it ends, synchronously."
   [exporter]
-  (->SimpleSpanProcessor exporter (atom {:shutdown? false})
-                         (lifecycle/terminal-action)))
+  (let [state (atom {:shutdown? false})]
+    (->SimpleSpanProcessor
+      exporter
+      state
+      (jolt-lifecycle/once-action
+        #(locking state
+           (swap! state assoc :shutdown? true)
+           (shutdown-exporter! exporter))))))
 
 ;; --- batch processor --------------------------------------------------------
 
@@ -112,7 +114,13 @@
         (Thread/sleep slice)
         (recur (- remaining slice))))))
 
-(defrecord BatchSpanProcessor [exporter state config worker terminal]
+(defn- flush-batch!
+  [exporter state config]
+  (locking state
+    (boolean (and (drain! exporter state (:max-export-batch-size config))
+                  (flush-exporter! exporter)))))
+
+(defrecord BatchSpanProcessor [exporter state config worker shutdown-action]
   SpanProcessor
   (on-start [_ _ _] nil)
   (on-end [_ span]
@@ -132,22 +140,8 @@
     ;; the completion barrier for that batch; checking an empty queue alone is
     ;; not sufficient. Using the atom object only as a monitor still leaves its
     ;; lock-free swap path available to nonblocking producers.
-    (locking state
-      (boolean (and (drain! exporter state (:max-export-batch-size config))
-                    (flush-exporter! exporter)))))
-  (shutdown! [this]
-    (lifecycle/run-terminal!
-      terminal
-      (fn []
-        ;; Mark shutdown first so nothing new is queued, then drain what is
-        ;; already there. The state swap is the acceptance boundary shared with
-        ;; on-end: every span accepted before it is drained, and later spans are
-        ;; rejected.
-        (swap! state assoc :shutdown? true)
-        (force-flush! this)
-        (when worker
-          (try (.join worker 5000) (catch :default _ nil)))
-        (shutdown-exporter! exporter)))))
+    (flush-batch! exporter state config))
+  (shutdown! [_] (shutdown-action)))
 
 (defn dropped-count
   "How many spans this processor has dropped because its queue was full."
@@ -181,12 +175,23 @@
      ;; refuses to exit.
      (.setDaemon worker true)
      (.start worker)
-     (->BatchSpanProcessor exporter state config worker
-                           (lifecycle/terminal-action)))))
+     (->BatchSpanProcessor
+       exporter state config worker
+       (jolt-lifecycle/once-action
+         (fn []
+           ;; Mark shutdown first so nothing new is queued, then drain what is
+           ;; already there. The state swap is the acceptance boundary shared
+           ;; with on-end: every span accepted before it is drained, and later
+           ;; spans are rejected.
+           (swap! state assoc :shutdown? true)
+           (flush-batch! exporter state config)
+           (when worker
+             (try (.join worker 5000) (catch :default _ nil)))
+           (shutdown-exporter! exporter)))))))
 
 ;; --- composite --------------------------------------------------------------
 
-(defrecord CompositeSpanProcessor [processors terminal]
+(defrecord CompositeSpanProcessor [processors shutdown-action]
   SpanProcessor
   (on-start [_ span parent-context]
     (doseq [p processors] (on-start p span parent-context))
@@ -198,16 +203,17 @@
     ;; reduce, not `every?`: every processor must be flushed even if an earlier
     ;; one failed, so short-circuiting would silently skip the rest.
     (reduce (fn [ok p] (and (force-flush! p) ok)) true processors))
-  (shutdown! [_]
-    (lifecycle/run-terminal!
-      terminal
-      #(lifecycle/run-all! (mapv (fn [p] (fn [] (shutdown! p)))
-                                 processors)))))
+  (shutdown! [_] (shutdown-action)))
 
 (defn composite-processor
   "One processor that fans out to several."
   [processors]
-  (->CompositeSpanProcessor (vec processors) (lifecycle/terminal-action)))
+  (let [processors (vec processors)]
+    (->CompositeSpanProcessor
+      processors
+      (jolt-lifecycle/once-action
+        #(lifecycle/run-all! (mapv (fn [p] (fn [] (shutdown! p)))
+                                   processors))))))
 
 ;; --- metrics ----------------------------------------------------------------
 

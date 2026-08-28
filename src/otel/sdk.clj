@@ -21,6 +21,7 @@
   without the application having to thread a provider into it."
   (:refer-clojure :exclude [name])
   (:require [clojure.string :as str]
+            [jolt.lifecycle :as jolt-lifecycle]
             [otel.bridge.tools-logging :as tools-logging]
             [otel.exporter.otlp :as otlp]
             [otel.exporter.stdout :as stdout]
@@ -135,6 +136,28 @@
     :otlp (otlp/log-exporter opts)
     (when (satisfies? sdk-logs/LogRecordExporter exporter) exporter)))
 
+(defn- shutdown-components!
+  [previous-factory reader logger-provider meter-provider tracer-provider]
+  ;; The logging bridge is removed first: once the logger provider is shut
+  ;; down, a bridged log call would emit into a dead provider.
+  (let [actions (cond-> []
+                  previous-factory
+                  (conj #(tools-logging/uninstall! previous-factory))
+                  reader
+                  (conj #(export/shutdown! reader))
+                  logger-provider
+                  (conj #(sdk-logs/shutdown! logger-provider))
+                  meter-provider
+                  (conj #(sdk-metrics/shutdown! meter-provider))
+                  tracer-provider
+                  (conj #(sdk-tracer/shutdown! tracer-provider)))]
+    (try
+      (lifecycle/run-all! actions)
+      (finally
+        (reset! global {:tracer-provider nil
+                        :meter-provider nil
+                        :logger-provider nil})))))
+
 (defn init!
   "Configure and install a tracing (and, unless disabled, metrics) SDK.
 
@@ -168,7 +191,10 @@
      :as opts}]
    (check-exporter exporter)
    (if (disabled?)
-     {:disabled? true :terminal (lifecycle/terminal-action)}
+     {:disabled? true
+      :shutdown-action
+      (jolt-lifecycle/once-action
+        #(shutdown-components! nil nil nil nil nil))}
      (let [base (res/merge-resources
                   (res/default-resource)
                   (cond-> (or resource res/empty-resource)
@@ -213,7 +239,9 @@
         :meter-provider mp
         :logger-provider lp
         :reader reader
-        :terminal (lifecycle/terminal-action)
+        :shutdown-action
+        (jolt-lifecycle/once-action
+          #(shutdown-components! previous-factory reader lp mp tp))
         :previous-logger-factory previous-factory
         :propagator propagation/default-propagator}))))
 
@@ -231,28 +259,10 @@
   Call this before the process exits: a batch processor holds spans that have not
   been sent yet, and they are lost if the process just ends."
   [handle]
-  (let [action
-        (fn []
-          ;; The logging bridge is removed first: once the logger provider is
-          ;; shut down, a bridged log call would emit into a dead provider.
-          (let [actions (cond-> []
-                          (:previous-logger-factory handle)
-                          (conj #(tools-logging/uninstall!
-                                   (:previous-logger-factory handle)))
+  (if-let [shutdown-action (:shutdown-action handle)]
+    (shutdown-action)
+    (shutdown-components! (:previous-logger-factory handle)
                           (:reader handle)
-                          (conj #(export/shutdown! (:reader handle)))
                           (:logger-provider handle)
-                          (conj #(sdk-logs/shutdown! (:logger-provider handle)))
                           (:meter-provider handle)
-                          (conj #(sdk-metrics/shutdown! (:meter-provider handle)))
-                          (:tracer-provider handle)
-                          (conj #(sdk-tracer/shutdown! (:tracer-provider handle))))]
-            (try
-              (lifecycle/run-all! actions)
-              (finally
-                (reset! global {:tracer-provider nil
-                                :meter-provider nil
-                                :logger-provider nil})))))]
-    (if-let [terminal (:terminal handle)]
-      (lifecycle/run-terminal! terminal action)
-      (action))))
+                          (:tracer-provider handle))))

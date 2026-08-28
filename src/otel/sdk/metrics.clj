@@ -13,12 +13,12 @@
   themselves, and is what the spec recommends pairing with a monotonic counter on
   a system that restarts often."
   (:refer-clojure :exclude [count])
-  (:require [otel.attributes :as attr]
+  (:require [jolt.lifecycle :as jolt-lifecycle]
+            [otel.attributes :as attr]
             [otel.metrics :as api]
             [otel.resource :as res]
             [otel.sdk.clock :as clock]
-            [otel.sdk.export :as export]
-            [otel.sdk.lifecycle :as lifecycle]))
+            [otel.sdk.export :as export]))
 
 (def default-boundaries
   "The spec's default explicit bucket boundaries, in the instrument's unit."
@@ -192,7 +192,7 @@
   (observable-gauge [m nm cb] (api/observable-gauge m nm cb {}))
   (observable-gauge [m nm cb opts] (register! m :observable-gauge nm opts cb)))
 
-(defrecord SdkMeterProvider [resource meters clock start-time temporality state terminal])
+(defrecord SdkMeterProvider [resource meters clock start-time temporality state shutdown-action])
 
 (defn meter-provider
   "Build a meter provider.
@@ -200,14 +200,20 @@
   Options: :resource, :clock, and :temporality (:cumulative, the default, or
   :delta)."
   [{:keys [resource clock temporality]}]
-  (let [c (clock/anchored (or clock clock/system))]
+  (let [c (clock/anchored (or clock clock/system))
+        meters (atom [])
+        state (atom {:shutdown? false})]
     (->SdkMeterProvider (or resource (res/default-resource))
-                        (atom [])
+                        meters
                         c
                         (clock/wall-nanos c)
                         (or temporality :cumulative)
-                        (atom {:shutdown? false})
-                        (lifecycle/terminal-action))))
+                        state
+                        (jolt-lifecycle/once-action
+                          #(locking state
+                             (swap! state assoc :shutdown? true)
+                             (reset! meters [])
+                             true)))))
 
 (defn get-meter
   "A meter for one instrumentation scope."
@@ -251,12 +257,7 @@
 (defn shutdown!
   "Stop the provider. Collection after this returns nothing."
   [provider]
-  (lifecycle/run-terminal!
-    (:terminal provider)
-    #(locking (:state provider)
-       (swap! (:state provider) assoc :shutdown? true)
-       (reset! (:meters provider) [])
-       true)))
+  ((:shutdown-action provider)))
 
 ;; --- periodic reader --------------------------------------------------------
 
@@ -277,7 +278,14 @@
         (println "otel: metric collection failed:" (ex-message e)))
       false)))
 
-(defrecord PeriodicReader [provider exporter config state worker terminal]
+(defn- flush-reader!
+  [provider exporter state]
+  (locking state
+    (if (:shutdown? @state)
+      false
+      (boolean (collect-and-export! provider exporter)))))
+
+(defrecord PeriodicReader [provider exporter config state worker shutdown-action]
   export/SpanProcessor
   ;; A reader is not a span processor; these arms exist only so a reader can be
   ;; shut down and flushed through the same calls a provider already makes.
@@ -287,22 +295,8 @@
     ;; Interval collection and force-flush both mutate delta aggregation state.
     ;; Serialize the entire collect/export operation so a flush also waits for
     ;; exporter I/O already started by the worker.
-    (locking state
-      (if (:shutdown? @state)
-        false
-        (boolean (collect-and-export! provider exporter)))))
-  (shutdown! [this]
-    (lifecycle/run-terminal!
-      terminal
-      (fn []
-        ;; Serialize the acceptance boundary with both scheduled and explicit
-        ;; collections. The final collection covers everything recorded before
-        ;; shutdown; later force-flush calls are rejected.
-        (locking state
-          (swap! state assoc :shutdown? true)
-          (collect-and-export! provider exporter))
-        (when worker (try (.join worker 5000) (catch :default _ nil)))
-        (export/shutdown-metric-exporter! exporter)))))
+    (flush-reader! provider exporter state))
+  (shutdown! [_] (shutdown-action)))
 
 (defn periodic-reader
   "Collect every instrument on an interval and hand the result to `exporter`.
@@ -331,5 +325,15 @@
                         (recur)))))]
      (.setDaemon worker true)
      (.start worker)
-     (->PeriodicReader provider exporter config state worker
-                       (lifecycle/terminal-action)))))
+     (->PeriodicReader
+       provider exporter config state worker
+       (jolt-lifecycle/once-action
+         (fn []
+           ;; Serialize the acceptance boundary with both scheduled and explicit
+           ;; collections. The final collection covers everything recorded before
+           ;; shutdown; later force-flush calls are rejected.
+           (locking state
+             (swap! state assoc :shutdown? true)
+             (collect-and-export! provider exporter))
+           (when worker (try (.join worker 5000) (catch :default _ nil)))
+           (export/shutdown-metric-exporter! exporter)))))))

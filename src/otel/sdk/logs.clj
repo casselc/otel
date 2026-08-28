@@ -10,12 +10,12 @@
   record picks up the active span's trace and span ids as it is created. Doing it
   later would be too late, because by the time a batch is exported the span that
   gave the record its meaning is long out of scope."
-  (:require [otel.attributes :as attr]
+  (:require [jolt.lifecycle :as jolt-lifecycle]
+            [otel.attributes :as attr]
             [otel.logs :as api]
             [otel.resource :as res]
             [otel.sdk.clock :as clock]
             [otel.sdk.export :as export]
-            [otel.sdk.lifecycle :as lifecycle]
             [otel.trace :as trace]))
 
 (def default-limits
@@ -33,7 +33,7 @@
 (defn- export-quietly! [exporter records]
   (try (export-logs! exporter records) (catch :default _ false)))
 
-(defrecord SimpleLogProcessor [exporter state terminal]
+(defrecord SimpleLogProcessor [exporter state shutdown-action]
   export/SpanProcessor
   (on-start [_ _ _] nil)
   (on-end [_ record]
@@ -42,18 +42,19 @@
         (export-quietly! exporter [record])))
     nil)
   (force-flush! [_] true)
-  (shutdown! [_]
-    (lifecycle/run-terminal!
-      terminal
-      #(locking state
-         (swap! state assoc :shutdown? true)
-         (shutdown-log-exporter! exporter)))))
+  (shutdown! [_] (shutdown-action)))
 
 (defn simple-processor
   "Export each record as it is emitted, synchronously."
   [exporter]
-  (->SimpleLogProcessor exporter (atom {:shutdown? false})
-                        (lifecycle/terminal-action)))
+  (let [state (atom {:shutdown? false})]
+    (->SimpleLogProcessor
+      exporter
+      state
+      (jolt-lifecycle/once-action
+        #(locking state
+           (swap! state assoc :shutdown? true)
+           (shutdown-log-exporter! exporter))))))
 
 (def default-batch-config
   {:max-queue-size 2048
@@ -74,7 +75,12 @@
         ok
         (recur (and (export-quietly! exporter batch) ok))))))
 
-(defrecord BatchLogProcessor [exporter state config worker terminal]
+(defn- flush-batch!
+  [exporter state config]
+  (locking state
+    (boolean (drain! exporter state (:max-export-batch-size config)))))
+
+(defrecord BatchLogProcessor [exporter state config worker shutdown-action]
   export/SpanProcessor
   (on-start [_ _ _] nil)
   (on-end [_ record]
@@ -90,16 +96,8 @@
     ;; A batch disappears from :queue before exporter I/O finishes. The shared
     ;; drain monitor turns force-flush into a completion barrier for a worker's
     ;; already-dequeued batch as well as for records still in the queue.
-    (locking state
-      (boolean (drain! exporter state (:max-export-batch-size config)))))
-  (shutdown! [this]
-    (lifecycle/run-terminal!
-      terminal
-      (fn []
-        (swap! state assoc :shutdown? true)
-        (export/force-flush! this)
-        (when worker (try (.join worker 5000) (catch :default _ nil)))
-        (shutdown-log-exporter! exporter)))))
+    (flush-batch! exporter state config))
+  (shutdown! [_] (shutdown-action)))
 
 (defn dropped-count [processor] (:dropped @(:state processor)))
 
@@ -122,8 +120,14 @@
                       (when-not (:shutdown? @state) (recur)))))]
      (.setDaemon worker true)
      (.start worker)
-     (->BatchLogProcessor exporter state config worker
-                          (lifecycle/terminal-action)))))
+     (->BatchLogProcessor
+       exporter state config worker
+       (jolt-lifecycle/once-action
+         (fn []
+           (swap! state assoc :shutdown? true)
+           (flush-batch! exporter state config)
+           (when worker (try (.join worker 5000) (catch :default _ nil)))
+           (shutdown-log-exporter! exporter)))))))
 
 ;; --- logger and provider ----------------------------------------------------
 
@@ -157,7 +161,7 @@
                                        :trace-flags (:trace-flags sc)))))))
     this))
 
-(defrecord SdkLoggerProvider [resource clock limits processor shutdown? terminal]
+(defrecord SdkLoggerProvider [resource clock limits processor shutdown? shutdown-action]
   api/LoggerProvider
   (get-logger* [this scope] (->SdkLogger this scope)))
 
@@ -167,12 +171,18 @@
   Options: :resource, :clock, :processors (a sequence of log record processors),
   and :limits."
   [{:keys [resource clock processors limits]}]
-  (->SdkLoggerProvider (or resource (res/default-resource))
-                       (clock/anchored (or clock clock/system))
-                       (merge default-limits limits)
-                       (export/composite-processor (or processors []))
-                       (atom false)
-                       (lifecycle/terminal-action)))
+  (let [processor (export/composite-processor (or processors []))
+        shutdown? (atom false)]
+    (->SdkLoggerProvider
+      (or resource (res/default-resource))
+      (clock/anchored (or clock clock/system))
+      (merge default-limits limits)
+      processor
+      shutdown?
+      (jolt-lifecycle/once-action
+        #(locking shutdown?
+           (reset! shutdown? true)
+           (export/shutdown! processor))))))
 
 (defn get-logger
   "A logger for one instrumentation scope."
@@ -182,8 +192,4 @@
 (defn force-flush! [provider] (export/force-flush! (:processor provider)))
 
 (defn shutdown! [provider]
-  (lifecycle/run-terminal!
-    (:terminal provider)
-    #(locking (:shutdown? provider)
-       (reset! (:shutdown? provider) true)
-       (export/shutdown! (:processor provider)))))
+  ((:shutdown-action provider)))

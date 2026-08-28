@@ -7,12 +7,12 @@
   tracer is a thin handle that stamps its instrumentation scope onto the spans it
   creates. That split is why a library can take a tracer at load time without
   knowing or caring how the application configured export."
-  (:require [otel.context :as ctx]
+  (:require [jolt.lifecycle :as jolt-lifecycle]
+            [otel.context :as ctx]
             [otel.id :as id]
             [otel.resource :as res]
             [otel.sdk.clock :as clock]
             [otel.sdk.export :as export]
-            [otel.sdk.lifecycle :as lifecycle]
             [otel.sdk.sampler :as sampler]
             [otel.sdk.span :as span]
             [otel.trace :as trace]))
@@ -74,7 +74,7 @@
               (export/on-start processor sp parent-ctx)
               sp))))))))
 
-(defrecord SdkTracerProvider [resource sampler limits clock processor shutdown? terminal])
+(defrecord SdkTracerProvider [resource sampler limits clock processor shutdown? shutdown-action])
 
 (defn tracer-provider
   "Build a tracer provider.
@@ -91,13 +91,19 @@
   the process comes from the monotonic clock, so a wall-clock step cannot produce
   a span that ends before it started."
   [{:keys [resource sampler processors limits clock]}]
-  (->SdkTracerProvider (or resource (res/default-resource))
-                       (or sampler sampler/default-sampler)
-                       (span/span-limits limits)
-                       (clock/anchored (or clock clock/system))
-                       (export/composite-processor (or processors []))
-                       (atom false)
-                       (lifecycle/terminal-action)))
+  (let [processor (export/composite-processor (or processors []))
+        shutdown? (atom false)]
+    (->SdkTracerProvider
+      (or resource (res/default-resource))
+      (or sampler sampler/default-sampler)
+      (span/span-limits limits)
+      (clock/anchored (or clock clock/system))
+      processor
+      shutdown?
+      (jolt-lifecycle/once-action
+        #(locking shutdown?
+           (reset! shutdown? true)
+           (export/shutdown! processor))))))
 
 (defn get-tracer
   "A tracer for one instrumentation scope. `:name` identifies the instrumenting
@@ -119,8 +125,4 @@
   "Flush and stop. The provider stops recording; call this before the process
   exits or buffered spans are lost."
   [provider]
-  (lifecycle/run-terminal!
-    (:terminal provider)
-    #(locking (:shutdown? provider)
-       (reset! (:shutdown? provider) true)
-       (export/shutdown! (:processor provider)))))
+  ((:shutdown-action provider)))

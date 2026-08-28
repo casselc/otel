@@ -22,8 +22,16 @@ All three are git coordinates in `deps.edn`; https also needs the system OpenSSL
 
 ## Requirements
 
-jolt v0.5.17 or newer, for the `jolt.host` telemetry primitives (`wall-nanos`,
-`mono-nanos`, the gc and memory counters).
+This fork-runtime branch requires Jolt commit
+`d459f5e430194d5a3a38a1646cc2585a013389fd` (or a descendant that retains
+`jolt.lifecycle/once-action`). It intentionally does not load on stock Jolt
+v0.7.28. The preceding `codex/shutdown-history` branch remains the
+stock-v0.7.28-compatible implementation at
+`efb3d58eae41a0d52f220552051770fb6219d5f4`; it does not depend on this
+fork-only follow-up or on fork-only library revisions.
+
+The SDK also requires the `jolt.host` telemetry primitives (`wall-nanos`,
+`mono-nanos`, the gc and memory counters), present since Jolt v0.5.17.
 
 The SDK checks at startup and says so plainly if the primitives are missing. It
 will not silently fall back to a millisecond clock: that is the exact defect the
@@ -31,6 +39,11 @@ two-clock design exists to avoid, and a quiet degradation would make every span
 duration wrong in a way nothing downstream could detect.
 
 ## Install
+
+The released, stock-runtime-compatible version is installed as follows. This
+uncommitted fork-runtime worktree has no stable dependency SHA to publish yet;
+consumers of it must pin the eventual commit as well as the Jolt runtime commit
+named above.
 
 ```clojure
 ;; deps.edn

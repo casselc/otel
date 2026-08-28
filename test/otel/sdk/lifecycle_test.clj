@@ -3,6 +3,8 @@
             [hegel.clojure-test :as ht]
             [hegel.generator :as g]
             [hegel.history :as history]
+            [jolt.host :as host]
+            [jolt.lifecycle :as jolt-lifecycle]
             [otel.metrics :as metrics-api]
             [otel.resource :as res]
             [otel.sdk :as sdk]
@@ -12,30 +14,75 @@
             [otel.sdk.metrics :as metrics]
             [otel.sdk.tracer :as tracer]))
 
-(deftest terminal-action-preserves-result-and-throwable-identity
+(deftest runtime-once-action-preserves-result-and-throwable-identity
   (testing "a returned object is memoized without boolean coercion"
-    (let [terminal (lifecycle/terminal-action)
-          calls (atom 0)
+    (let [calls (atom 0)
           marker (atom :marker)
-          run #(lifecycle/run-terminal!
-                 terminal
-                 (fn [] (swap! calls inc) marker))]
+          run (jolt-lifecycle/once-action
+                (fn [] (swap! calls inc) marker))]
       (is (identical? marker (run)))
       (is (identical? marker (run)))
       (is (= 1 @calls))))
   (testing "the first Throwable object is rethrown to every caller"
-    (let [terminal (lifecycle/terminal-action)
-          calls (atom 0)
+    (let [calls (atom 0)
           failure (ex-info "terminal failure" {:expected true})
-          run #(try
-                 (lifecycle/run-terminal!
-                   terminal
+          action (jolt-lifecycle/once-action
                    (fn [] (swap! calls inc) (throw failure)))
-                 nil
-                 (catch :default throwable throwable))]
-      (is (identical? failure (run)))
-      (is (identical? failure (run)))
+          observe #(try (action) nil (catch :default throwable throwable))]
+      (is (identical? failure (observe)))
+      (is (identical? failure (observe)))
       (is (= 1 @calls)))))
+
+(deftest sdk-owner-uses-runtime-once-action-and-publishes-cancellation
+  (let [runtime-once-action jolt-lifecycle/once-action
+        wrappers (atom 0)
+        invocations (atom 0)
+        body-entered (promise)
+        never (promise)
+        shutdown-calls (atom 0)
+        exporter
+        (reify export/SpanExporter
+          (export-spans! [_ _] true)
+          (flush-exporter! [_] true)
+          (shutdown-exporter! [_]
+            (swap! shutdown-calls inc)
+            (deliver body-entered true)
+            @never))]
+    (with-redefs [jolt-lifecycle/once-action
+                  (fn [action]
+                    (swap! wrappers inc)
+                    (let [wrapped (runtime-once-action action)]
+                      (fn []
+                        (swap! invocations inc)
+                        (wrapped))))]
+      (let [processor (export/simple-processor exporter)
+            winner (future (export/shutdown! processor))]
+        (is (= true (deref body-entered 5000 false)))
+        (let [waiter (future
+                       (try
+                         (export/shutdown! processor)
+                         nil
+                         (catch :default throwable throwable)))]
+          (is (future-cancel winner))
+          (let [first-error (deref waiter 5000 ::timeout)
+                _ (when (= ::timeout first-error) (deliver never true))
+                repeated (when (instance? InterruptedException first-error)
+                           (future
+                             (try
+                               (export/shutdown! processor)
+                               nil
+                               (catch :default throwable throwable))))
+                repeated-error (if repeated
+                                 (deref repeated 5000 ::timeout)
+                                 ::not-observed)]
+            (is (not= ::timeout first-error))
+            (is (instance? InterruptedException first-error))
+            (is (identical? first-error repeated-error))
+            (is (= 1 @wrappers)
+                "the public owner constructor must call jolt.lifecycle/once-action")
+            (is (= 3 @invocations)
+                "every shutdown call must invoke the runtime-provided wrapper")
+            (is (= 1 @shutdown-calls))))))))
 
 (defrecord CountingExporter [span-calls log-calls metric-calls
                              span-marker log-marker metric-marker]
@@ -51,6 +98,61 @@
   export/MetricExporter
   (export-metrics! [_ _ _] true)
   (shutdown-metric-exporter! [_] (swap! metric-calls inc) metric-marker))
+
+(deftest every-sdk-owner-constructs-a-runtime-once-action
+  (let [runtime-once-action jolt-lifecycle/once-action
+        wrappers (atom 0)
+        exporter
+        (reify
+          export/SpanExporter
+          (export-spans! [_ _] true)
+          (flush-exporter! [_] true)
+          (shutdown-exporter! [_] true)
+
+          logs/LogRecordExporter
+          (export-logs! [_ _] true)
+          (shutdown-log-exporter! [_] true)
+
+          export/MetricExporter
+          (export-metrics! [_ _ _] true)
+          (shutdown-metric-exporter! [_] true))]
+    (with-redefs [jolt-lifecycle/once-action
+                  (fn [action]
+                    (swap! wrappers inc)
+                    (runtime-once-action action))]
+      (let [simple-span (export/simple-processor exporter)
+            batch-span (export/batch-processor exporter {:schedule-delay-ms 60000})
+            composite-span (export/composite-processor [])
+            tracer-provider (tracer/tracer-provider {:resource res/empty-resource})
+            simple-log (logs/simple-processor exporter)
+            batch-log (logs/batch-processor exporter {:schedule-delay-ms 60000})
+            logger-provider (logs/logger-provider {:resource res/empty-resource})
+            meter-provider (metrics/meter-provider {:resource res/empty-resource})
+            reader (metrics/periodic-reader meter-provider exporter
+                                            {:interval-ms 60000})
+            handle (sdk/init! {:exporter :none
+                               :metrics? false
+                               :runtime-metrics? false
+                               :logs? false})
+            disabled-handle
+            (with-redefs [host/getenv
+                          (fn [name]
+                            (when (= "OTEL_SDK_DISABLED" name) "true"))]
+              (sdk/init! {:exporter :none}))]
+        (is (= 15 @wrappers)
+            "every migrated owner path must construct jolt.lifecycle/once-action")
+        (doseq [shutdown [#(export/shutdown! simple-span)
+                          #(export/shutdown! batch-span)
+                          #(export/shutdown! composite-span)
+                          #(tracer/shutdown! tracer-provider)
+                          #(export/shutdown! simple-log)
+                          #(export/shutdown! batch-log)
+                          #(logs/shutdown! logger-provider)
+                          #(export/shutdown! reader)
+                          #(metrics/shutdown! meter-provider)
+                          #(sdk/shutdown! handle)
+                          #(sdk/shutdown! disabled-handle)]]
+          (shutdown))))))
 
 (deftest each-signal-owner-invokes-its-exporter-once
   (let [span-calls (atom 0)
