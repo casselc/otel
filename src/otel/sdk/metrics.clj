@@ -17,7 +17,8 @@
             [otel.metrics :as api]
             [otel.resource :as res]
             [otel.sdk.clock :as clock]
-            [otel.sdk.export :as export]))
+            [otel.sdk.export :as export]
+            [otel.sdk.lifecycle :as lifecycle]))
 
 (def default-boundaries
   "The spec's default explicit bucket boundaries, in the instrument's unit."
@@ -191,7 +192,7 @@
   (observable-gauge [m nm cb] (api/observable-gauge m nm cb {}))
   (observable-gauge [m nm cb opts] (register! m :observable-gauge nm opts cb)))
 
-(defrecord SdkMeterProvider [resource meters clock start-time temporality state])
+(defrecord SdkMeterProvider [resource meters clock start-time temporality state terminal])
 
 (defn meter-provider
   "Build a meter provider.
@@ -205,16 +206,20 @@
                         c
                         (clock/wall-nanos c)
                         (or temporality :cumulative)
-                        (atom {:shutdown? false}))))
+                        (atom {:shutdown? false})
+                        (lifecycle/terminal-action))))
 
 (defn get-meter
   "A meter for one instrumentation scope."
   [provider {:keys [name version schema-url]}]
-  (let [m (->SdkMeter {:name name :version version :schema-url schema-url}
-                      (atom [])
-                      (:clock provider))]
-    (swap! (:meters provider) conj m)
-    m))
+  (locking (:state provider)
+    (if (:shutdown? @(:state provider))
+      api/noop-meter
+      (let [m (->SdkMeter {:name name :version version :schema-url schema-url}
+                          (atom [])
+                          (:clock provider))]
+        (swap! (:meters provider) conj m)
+        m))))
 
 (defn collect!
   "Snapshot every instrument in the provider as metric data.
@@ -224,28 +229,34 @@
   the collecting thread, at the reader's cadence, not on the application's hot
   path."
   [provider]
-  (let [now (clock/wall-nanos (:clock provider))
-        start (:start-time provider)
-        temporality (:temporality provider)]
-    (doall
-      (for [meter @(:meters provider)
-            :let [insts @(:instruments meter)]
-            :when (seq insts)]
-        {:scope (:scope meter)
-         :metrics (doall
-                    (for [inst insts]
-                      (do
-                        (when (:callback inst) (observe-async! inst))
-                        (let [m (instrument->metric inst start now temporality)]
-                          (when (= :delta temporality) (reset-for-delta! inst))
-                          m))))}))))
+  (locking (:state provider)
+    (if (:shutdown? @(:state provider))
+      []
+      (let [now (clock/wall-nanos (:clock provider))
+            start (:start-time provider)
+            temporality (:temporality provider)]
+        (doall
+          (for [meter @(:meters provider)
+                :let [insts @(:instruments meter)]
+                :when (seq insts)]
+            {:scope (:scope meter)
+             :metrics (doall
+                        (for [inst insts]
+                          (do
+                            (when (:callback inst) (observe-async! inst))
+                            (let [m (instrument->metric inst start now temporality)]
+                              (when (= :delta temporality) (reset-for-delta! inst))
+                              m))))}))))))
 
 (defn shutdown!
   "Stop the provider. Collection after this returns nothing."
   [provider]
-  (swap! (:state provider) assoc :shutdown? true)
-  (reset! (:meters provider) [])
-  true)
+  (lifecycle/run-terminal!
+    (:terminal provider)
+    #(locking (:state provider)
+       (swap! (:state provider) assoc :shutdown? true)
+       (reset! (:meters provider) [])
+       true)))
 
 ;; --- periodic reader --------------------------------------------------------
 
@@ -266,7 +277,7 @@
         (println "otel: metric collection failed:" (ex-message e)))
       false)))
 
-(defrecord PeriodicReader [provider exporter config state worker]
+(defrecord PeriodicReader [provider exporter config state worker terminal]
   export/SpanProcessor
   ;; A reader is not a span processor; these arms exist only so a reader can be
   ;; shut down and flushed through the same calls a provider already makes.
@@ -277,12 +288,21 @@
     ;; Serialize the entire collect/export operation so a flush also waits for
     ;; exporter I/O already started by the worker.
     (locking state
-      (boolean (collect-and-export! provider exporter))))
+      (if (:shutdown? @state)
+        false
+        (boolean (collect-and-export! provider exporter)))))
   (shutdown! [this]
-    (swap! state assoc :shutdown? true)
-    (export/force-flush! this)
-    (when worker (try (.join worker 5000) (catch :default _ nil)))
-    (boolean (export/shutdown-metric-exporter! exporter))))
+    (lifecycle/run-terminal!
+      terminal
+      (fn []
+        ;; Serialize the acceptance boundary with both scheduled and explicit
+        ;; collections. The final collection covers everything recorded before
+        ;; shutdown; later force-flush calls are rejected.
+        (locking state
+          (swap! state assoc :shutdown? true)
+          (collect-and-export! provider exporter))
+        (when worker (try (.join worker 5000) (catch :default _ nil)))
+        (export/shutdown-metric-exporter! exporter)))))
 
 (defn periodic-reader
   "Collect every instrument on an interval and hand the result to `exporter`.
@@ -306,8 +326,10 @@
                             (recur (- remaining slice)))))
                       (when-not (:shutdown? @state)
                         (locking state
-                          (collect-and-export! provider exporter))
+                          (when-not (:shutdown? @state)
+                            (collect-and-export! provider exporter)))
                         (recur)))))]
      (.setDaemon worker true)
      (.start worker)
-     (->PeriodicReader provider exporter config state worker))))
+     (->PeriodicReader provider exporter config state worker
+                       (lifecycle/terminal-action)))))

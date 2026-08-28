@@ -15,7 +15,8 @@
                       must never block or crash the workload it is observing.
 
   An exporter is the thing that actually writes them somewhere."
-  (:require [otel.trace :as trace]))
+  (:require [otel.sdk.lifecycle :as lifecycle]
+            [otel.trace :as trace]))
 
 (defprotocol SpanExporter
   (export-spans! [exporter spans]
@@ -46,22 +47,30 @@
     (export-spans! exporter spans)
     (catch :default _ false)))
 
-(defrecord SimpleSpanProcessor [exporter]
+(defrecord SimpleSpanProcessor [exporter state terminal]
   SpanProcessor
   (on-start [_ _ _] nil)
   (on-end [_ span]
     ;; Only sampled spans are exported. A :record-only span is recorded locally
     ;; for in-process consumers but is deliberately not sent onward.
-    (when (trace/sampled? (:span-context span))
-      (export-quietly! exporter [span]))
+    (locking state
+      (when (and (not (:shutdown? @state))
+                 (trace/sampled? (:span-context span)))
+        (export-quietly! exporter [span])))
     nil)
   (force-flush! [_] (boolean (flush-exporter! exporter)))
-  (shutdown! [_] (boolean (shutdown-exporter! exporter))))
+  (shutdown! [_]
+    (lifecycle/run-terminal!
+      terminal
+      #(locking state
+         (swap! state assoc :shutdown? true)
+         (shutdown-exporter! exporter)))))
 
 (defn simple-processor
   "Export each span as it ends, synchronously."
   [exporter]
-  (->SimpleSpanProcessor exporter))
+  (->SimpleSpanProcessor exporter (atom {:shutdown? false})
+                         (lifecycle/terminal-action)))
 
 ;; --- batch processor --------------------------------------------------------
 
@@ -103,7 +112,7 @@
         (Thread/sleep slice)
         (recur (- remaining slice))))))
 
-(defrecord BatchSpanProcessor [exporter state config worker]
+(defrecord BatchSpanProcessor [exporter state config worker terminal]
   SpanProcessor
   (on-start [_ _ _] nil)
   (on-end [_ span]
@@ -127,13 +136,18 @@
       (boolean (and (drain! exporter state (:max-export-batch-size config))
                     (flush-exporter! exporter)))))
   (shutdown! [this]
-    ;; Mark shutdown first so nothing new is queued, then drain what is already
-    ;; there — a span that was recorded before shutdown should still be exported.
-    (swap! state assoc :shutdown? true)
-    (force-flush! this)
-    (when worker
-      (try (.join worker 5000) (catch :default _ nil)))
-    (boolean (shutdown-exporter! exporter))))
+    (lifecycle/run-terminal!
+      terminal
+      (fn []
+        ;; Mark shutdown first so nothing new is queued, then drain what is
+        ;; already there. The state swap is the acceptance boundary shared with
+        ;; on-end: every span accepted before it is drained, and later spans are
+        ;; rejected.
+        (swap! state assoc :shutdown? true)
+        (force-flush! this)
+        (when worker
+          (try (.join worker 5000) (catch :default _ nil)))
+        (shutdown-exporter! exporter)))))
 
 (defn dropped-count
   "How many spans this processor has dropped because its queue was full."
@@ -167,11 +181,12 @@
      ;; refuses to exit.
      (.setDaemon worker true)
      (.start worker)
-     (->BatchSpanProcessor exporter state config worker))))
+     (->BatchSpanProcessor exporter state config worker
+                           (lifecycle/terminal-action)))))
 
 ;; --- composite --------------------------------------------------------------
 
-(defrecord CompositeSpanProcessor [processors]
+(defrecord CompositeSpanProcessor [processors terminal]
   SpanProcessor
   (on-start [_ span parent-context]
     (doseq [p processors] (on-start p span parent-context))
@@ -184,12 +199,15 @@
     ;; one failed, so short-circuiting would silently skip the rest.
     (reduce (fn [ok p] (and (force-flush! p) ok)) true processors))
   (shutdown! [_]
-    (reduce (fn [ok p] (and (shutdown! p) ok)) true processors)))
+    (lifecycle/run-terminal!
+      terminal
+      #(lifecycle/run-all! (mapv (fn [p] (fn [] (shutdown! p)))
+                                 processors)))))
 
 (defn composite-processor
   "One processor that fans out to several."
   [processors]
-  (->CompositeSpanProcessor (vec processors)))
+  (->CompositeSpanProcessor (vec processors) (lifecycle/terminal-action)))
 
 ;; --- metrics ----------------------------------------------------------------
 

@@ -12,6 +12,7 @@
             [otel.resource :as res]
             [otel.sdk.clock :as clock]
             [otel.sdk.export :as export]
+            [otel.sdk.lifecycle :as lifecycle]
             [otel.sdk.sampler :as sampler]
             [otel.sdk.span :as span]
             [otel.trace :as trace]))
@@ -20,12 +21,13 @@
   trace/Tracer
   (start-span* [_ name opts]
     (let [{:keys [resource sampler limits clock processor shutdown?]} provider]
-      (if @shutdown?
-        ;; After shutdown nothing can be exported, so a span would only cost
-        ;; memory. It still propagates: a non-recording span keeps the trace
-        ;; intact for anything downstream that is still running.
-        (trace/non-recording-span trace/invalid-span-context)
-        (let [parent-ctx (or (:parent opts) (ctx/current))
+      (locking shutdown?
+        (if @shutdown?
+          ;; After shutdown nothing can be exported, so a span would only cost
+          ;; memory. It still propagates: a non-recording span keeps the trace
+          ;; intact for anything downstream that is still running.
+          (trace/non-recording-span trace/invalid-span-context)
+          (let [parent-ctx (or (:parent opts) (ctx/current))
               parent-sc (trace/span-context-of (trace/span-from-context parent-ctx))
               parent? (trace/valid? parent-sc)
               ;; A child stays in its parent's trace; a root starts a new one.
@@ -70,9 +72,9 @@
                         :attributes (merge (:attributes decision) (:attributes opts))
                         :links links})]
               (export/on-start processor sp parent-ctx)
-              sp)))))))
+              sp))))))))
 
-(defrecord SdkTracerProvider [resource sampler limits clock processor shutdown?])
+(defrecord SdkTracerProvider [resource sampler limits clock processor shutdown? terminal])
 
 (defn tracer-provider
   "Build a tracer provider.
@@ -94,7 +96,8 @@
                        (span/span-limits limits)
                        (clock/anchored (or clock clock/system))
                        (export/composite-processor (or processors []))
-                       (atom false)))
+                       (atom false)
+                       (lifecycle/terminal-action)))
 
 (defn get-tracer
   "A tracer for one instrumentation scope. `:name` identifies the instrumenting
@@ -116,5 +119,8 @@
   "Flush and stop. The provider stops recording; call this before the process
   exits or buffered spans are lost."
   [provider]
-  (reset! (:shutdown? provider) true)
-  (export/shutdown! (:processor provider)))
+  (lifecycle/run-terminal!
+    (:terminal provider)
+    #(locking (:shutdown? provider)
+       (reset! (:shutdown? provider) true)
+       (export/shutdown! (:processor provider)))))

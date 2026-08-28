@@ -30,6 +30,7 @@
             [otel.propagation :as propagation]
             [otel.resource :as res]
             [otel.sdk.export :as export]
+            [otel.sdk.lifecycle :as lifecycle]
             [otel.sdk.logs :as sdk-logs]
             [otel.sdk.metrics :as sdk-metrics]
             [otel.sdk.sampler :as sampler]
@@ -167,7 +168,7 @@
      :as opts}]
    (check-exporter exporter)
    (if (disabled?)
-     {:disabled? true}
+     {:disabled? true :terminal (lifecycle/terminal-action)}
      (let [base (res/merge-resources
                   (res/default-resource)
                   (cond-> (or resource res/empty-resource)
@@ -212,6 +213,7 @@
         :meter-provider mp
         :logger-provider lp
         :reader reader
+        :terminal (lifecycle/terminal-action)
         :previous-logger-factory previous-factory
         :propagator propagation/default-propagator}))))
 
@@ -229,14 +231,28 @@
   Call this before the process exits: a batch processor holds spans that have not
   been sent yet, and they are lost if the process just ends."
   [handle]
-  ;; The logging bridge is removed first: once the logger provider is shut down,
-  ;; a bridged log call would emit into a dead provider on every line.
-  (when-let [previous (:previous-logger-factory handle)]
-    (tools-logging/uninstall! previous))
-  (let [ok (cond-> true
-             (:reader handle) (and (export/shutdown! (:reader handle)))
-             (:logger-provider handle) (and (sdk-logs/shutdown! (:logger-provider handle)))
-             (:meter-provider handle) (and (sdk-metrics/shutdown! (:meter-provider handle)))
-             (:tracer-provider handle) (and (sdk-tracer/shutdown! (:tracer-provider handle))))]
-    (reset! global {:tracer-provider nil :meter-provider nil :logger-provider nil})
-    ok))
+  (let [action
+        (fn []
+          ;; The logging bridge is removed first: once the logger provider is
+          ;; shut down, a bridged log call would emit into a dead provider.
+          (let [actions (cond-> []
+                          (:previous-logger-factory handle)
+                          (conj #(tools-logging/uninstall!
+                                   (:previous-logger-factory handle)))
+                          (:reader handle)
+                          (conj #(export/shutdown! (:reader handle)))
+                          (:logger-provider handle)
+                          (conj #(sdk-logs/shutdown! (:logger-provider handle)))
+                          (:meter-provider handle)
+                          (conj #(sdk-metrics/shutdown! (:meter-provider handle)))
+                          (:tracer-provider handle)
+                          (conj #(sdk-tracer/shutdown! (:tracer-provider handle))))]
+            (try
+              (lifecycle/run-all! actions)
+              (finally
+                (reset! global {:tracer-provider nil
+                                :meter-provider nil
+                                :logger-provider nil})))))]
+    (if-let [terminal (:terminal handle)]
+      (lifecycle/run-terminal! terminal action)
+      (action))))

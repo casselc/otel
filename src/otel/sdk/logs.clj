@@ -15,6 +15,7 @@
             [otel.resource :as res]
             [otel.sdk.clock :as clock]
             [otel.sdk.export :as export]
+            [otel.sdk.lifecycle :as lifecycle]
             [otel.trace :as trace]))
 
 (def default-limits
@@ -32,17 +33,27 @@
 (defn- export-quietly! [exporter records]
   (try (export-logs! exporter records) (catch :default _ false)))
 
-(defrecord SimpleLogProcessor [exporter]
+(defrecord SimpleLogProcessor [exporter state terminal]
   export/SpanProcessor
   (on-start [_ _ _] nil)
-  (on-end [_ record] (export-quietly! exporter [record]) nil)
+  (on-end [_ record]
+    (locking state
+      (when-not (:shutdown? @state)
+        (export-quietly! exporter [record])))
+    nil)
   (force-flush! [_] true)
-  (shutdown! [_] (boolean (shutdown-log-exporter! exporter))))
+  (shutdown! [_]
+    (lifecycle/run-terminal!
+      terminal
+      #(locking state
+         (swap! state assoc :shutdown? true)
+         (shutdown-log-exporter! exporter)))))
 
 (defn simple-processor
   "Export each record as it is emitted, synchronously."
   [exporter]
-  (->SimpleLogProcessor exporter))
+  (->SimpleLogProcessor exporter (atom {:shutdown? false})
+                        (lifecycle/terminal-action)))
 
 (def default-batch-config
   {:max-queue-size 2048
@@ -63,7 +74,7 @@
         ok
         (recur (and (export-quietly! exporter batch) ok))))))
 
-(defrecord BatchLogProcessor [exporter state config worker]
+(defrecord BatchLogProcessor [exporter state config worker terminal]
   export/SpanProcessor
   (on-start [_ _ _] nil)
   (on-end [_ record]
@@ -82,10 +93,13 @@
     (locking state
       (boolean (drain! exporter state (:max-export-batch-size config)))))
   (shutdown! [this]
-    (swap! state assoc :shutdown? true)
-    (export/force-flush! this)
-    (when worker (try (.join worker 5000) (catch :default _ nil)))
-    (boolean (shutdown-log-exporter! exporter))))
+    (lifecycle/run-terminal!
+      terminal
+      (fn []
+        (swap! state assoc :shutdown? true)
+        (export/force-flush! this)
+        (when worker (try (.join worker 5000) (catch :default _ nil)))
+        (shutdown-log-exporter! exporter)))))
 
 (defn dropped-count [processor] (:dropped @(:state processor)))
 
@@ -108,7 +122,8 @@
                       (when-not (:shutdown? @state) (recur)))))]
      (.setDaemon worker true)
      (.start worker)
-     (->BatchLogProcessor exporter state config worker))))
+     (->BatchLogProcessor exporter state config worker
+                          (lifecycle/terminal-action)))))
 
 ;; --- logger and provider ----------------------------------------------------
 
@@ -116,32 +131,33 @@
   api/Logger
   (log-enabled? [_ _] (not @(:shutdown? provider)))
   (emit! [this record]
-    (when-not @(:shutdown? provider)
-      (let [{:keys [clock resource limits processor]} provider
-            now (clock/wall-nanos clock)
-            level (:severity record)
-            ;; The active span at emit time is what ties this record to a
-            ;; request. Captured here because it is gone by export time.
-            sc (trace/current-span-context)
-            lim (attr/limits {:count-limit (:attribute-count-limit limits)
-                              :value-length-limit (:attribute-value-length-limit limits)})]
-        (export/on-end
-          processor
-          (cond-> {:body (:body record)
-                   :event-name (:event-name record)
-                   :severity-number (or (:severity-number record) (api/severity-number level))
-                   :severity-text (or (:severity-text record) (api/severity-text level))
-                   :timestamp-unix-nano (:timestamp record)
-                   :observed-time-unix-nano (or (:observed-timestamp record) now)
-                   :attributes (attr/normalize (:attributes record) lim)
-                   :resource resource
-                   :scope scope}
-            (trace/valid? sc) (assoc :trace-id (:trace-id sc)
-                                     :span-id (:span-id sc)
-                                     :trace-flags (:trace-flags sc))))))
+    (locking (:shutdown? provider)
+      (when-not @(:shutdown? provider)
+        (let [{:keys [clock resource limits processor]} provider
+              now (clock/wall-nanos clock)
+              level (:severity record)
+              ;; The active span at emit time is what ties this record to a
+              ;; request. Captured here because it is gone by export time.
+              sc (trace/current-span-context)
+              lim (attr/limits {:count-limit (:attribute-count-limit limits)
+                                :value-length-limit (:attribute-value-length-limit limits)})]
+          (export/on-end
+            processor
+            (cond-> {:body (:body record)
+                     :event-name (:event-name record)
+                     :severity-number (or (:severity-number record) (api/severity-number level))
+                     :severity-text (or (:severity-text record) (api/severity-text level))
+                     :timestamp-unix-nano (:timestamp record)
+                     :observed-time-unix-nano (or (:observed-timestamp record) now)
+                     :attributes (attr/normalize (:attributes record) lim)
+                     :resource resource
+                     :scope scope}
+              (trace/valid? sc) (assoc :trace-id (:trace-id sc)
+                                       :span-id (:span-id sc)
+                                       :trace-flags (:trace-flags sc)))))))
     this))
 
-(defrecord SdkLoggerProvider [resource clock limits processor shutdown?]
+(defrecord SdkLoggerProvider [resource clock limits processor shutdown? terminal]
   api/LoggerProvider
   (get-logger* [this scope] (->SdkLogger this scope)))
 
@@ -155,7 +171,8 @@
                        (clock/anchored (or clock clock/system))
                        (merge default-limits limits)
                        (export/composite-processor (or processors []))
-                       (atom false)))
+                       (atom false)
+                       (lifecycle/terminal-action)))
 
 (defn get-logger
   "A logger for one instrumentation scope."
@@ -165,5 +182,8 @@
 (defn force-flush! [provider] (export/force-flush! (:processor provider)))
 
 (defn shutdown! [provider]
-  (reset! (:shutdown? provider) true)
-  (export/shutdown! (:processor provider)))
+  (lifecycle/run-terminal!
+    (:terminal provider)
+    #(locking (:shutdown? provider)
+       (reset! (:shutdown? provider) true)
+       (export/shutdown! (:processor provider)))))
