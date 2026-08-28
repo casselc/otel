@@ -253,6 +253,14 @@
          (or (nil? (:reader handle)) (export/force-flush! (:reader handle)))
          (or (nil? (:logger-provider handle)) (sdk-logs/force-flush! (:logger-provider handle))))))
 
+(def ^:private shutdown-component-keys
+  [:previous-logger-factory :reader :logger-provider :meter-provider
+   :tracer-provider])
+
+(defn- component-handle?
+  [handle]
+  (boolean (some #(some? (get handle %)) shutdown-component-keys)))
+
 (defn shutdown!
   "Flush and stop everything `init!` started, and clear the global registry.
 
@@ -261,8 +269,8 @@
   [handle]
   (if-let [shutdown-action (:shutdown-action handle)]
     (shutdown-action)
-    (shutdown-components! (:previous-logger-factory handle)
-                          (:reader handle)
-                          (:logger-provider handle)
-                          (:meter-provider handle)
-                          (:tracer-provider handle))))
+    (if (component-handle? handle)
+      (throw (ex-info "SDK shutdown requires the lifecycle handle returned by init!"
+                      {:otel.sdk/error :invalid-shutdown-handle
+                       :missing :shutdown-action}))
+      true)))
