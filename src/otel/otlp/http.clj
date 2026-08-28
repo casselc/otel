@@ -1,7 +1,7 @@
 (ns otel.otlp.http
   "The OTLP transport: an HTTP POST, and the endpoint parsing around it.
 
-  The request itself goes through jolt-lang/http-client (clj-http-lite on jolt),
+  The request itself goes through casselc/http-client (clj-http-lite on jolt),
   which carries TLS via the system OpenSSL. That is the whole reason this
   namespace is thin: an exporter has no business owning a socket, a TLS
   handshake, or HTTP framing, and an earlier version of this file that did own
