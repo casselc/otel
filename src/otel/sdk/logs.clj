@@ -128,6 +128,7 @@
         (export/on-end
           processor
           (cond-> {:body (:body record)
+                   :event-name (:event-name record)
                    :severity-number (or (:severity-number record) (api/severity-number level))
                    :severity-text (or (:severity-text record) (api/severity-text level))
                    :timestamp-unix-nano (:timestamp record)

@@ -76,6 +76,15 @@
     (logs/emit! logger {:body "x" :severity :info :timestamp 55})
     (is (= 55 (:timestamp-unix-nano (first (memory/records exporter)))))))
 
+(deftest semantic-event-name-is-kept-separately-from-body
+  (let [{:keys [logger exporter]} (setup)]
+    (logs/emit! logger {:event-name "http.client.request.exception"
+                        :body "request failed"
+                        :severity :warn})
+    (let [[r] (memory/records exporter)]
+      (is (= "http.client.request.exception" (:event-name r)))
+      (is (= "request failed" (:body r))))))
+
 ;; --- correlation ------------------------------------------------------------
 
 (deftest a-record-emitted-in-a-span-carries-its-ids
@@ -170,10 +179,12 @@
 
 (deftest encodes-a-log-record
   (let [{:keys [logger exporter]} (setup)]
-    (logs/emit! logger {:body "hello" :severity :error :attributes {:k "v"}})
+    (logs/emit! logger {:body "hello" :event-name "app.failure"
+                        :severity :error :attributes {:k "v"}})
     (let [req (enc/logs-request (memory/records exporter))
           r (-> req :resourceLogs first :scopeLogs first :logRecords first)]
       (is (= {:stringValue "hello"} (:body r)))
+      (is (= "app.failure" (:eventName r)))
       (is (= 17 (:severityNumber r)))
       (is (= "ERROR" (:severityText r)))
       (is (string? (:observedTimeUnixNano r)))

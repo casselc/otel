@@ -37,9 +37,11 @@
 
 (defprotocol Logger
   (emit! [logger record]
-    "Emit a log record. `record` may carry :body, :severity (a level keyword),
-    :severity-number, :severity-text, :attributes, :timestamp (nanos, when the
-    event happened) and :observed-timestamp (nanos, when it was collected).")
+    "Emit a log record. `record` may carry :body, :event-name, :severity (a
+    level keyword), :severity-number, :severity-text, :attributes, :timestamp
+    (nanos, when the event happened) and :observed-timestamp (nanos, when it was
+    collected). `:event-name` maps to OTLP LogRecord.event_name and is the
+    semantic-convention event identity; it is not a replacement for :body.")
   (log-enabled? [logger level]
     "Whether a record at `level` would be recorded. Guard expensive message
     construction with it."))
