@@ -22,8 +22,9 @@ All three are git coordinates in `deps.edn`; https also needs the system OpenSSL
 
 ## Requirements
 
-jolt v0.5.17 or newer, for the `jolt.host` telemetry primitives (`wall-nanos`,
-`mono-nanos`, the gc and memory counters).
+jolt v0.8.0 or newer. The telemetry implementation uses the `jolt.host`
+primitives (`wall-nanos`, `mono-nanos`, and the gc and memory counters) and its
+HTTP/TLS dependencies use Jolt 0.8's value-first FFI write API.
 
 The SDK checks at startup and says so plainly if the primitives are missing. It
 will not silently fall back to a millisecond clock: that is the exact defect the
