@@ -10,7 +10,7 @@
  ;; visible rather than an implicit transitive fact.
  :deps {io.github.casselc/http-client {:git/url "https://github.com/casselc/http-client.git"
                                       :git/sha "5b4de3c321387adba3e0695b0107215b769146e0"}
-        jolt-lang/jolt-crypto {:git/url "https://github.com/jolt-lang/jolt-crypto"
+        jolt-lang/jolt-crypto {:git/url "https://github.com/casselc/jolt-crypto.git"
                                :git/sha "8bd234142d56dd75d36d58065a311f29fa08611e"}
         org.clojure/tools.logging {:git/url "https://github.com/jolt-lang/logging"
                                    :git/sha "ec6747e55583118d881faf4ab41e68d7e587ce4c"}}
