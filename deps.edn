@@ -17,7 +17,9 @@
                   :extra-deps
                   {io.github.chucklehead-dev/jolt-hegel
                    {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
-                    :git/sha "53631c81cd927175935037699ddf687d98a44d24"}}}}
+                    ;; Current Jolt uses value-first ffi/write. The prior pin
+                    ;; predates that ABI and crashes the receiver properties.
+                    :git/sha "b214f769983211431c74e427f0f35553cfba7b34"}}}}
 
  ;; A map task applies the project's own :paths only, so the test task shells back
  ;; through jolt with -M:test to pick up the :test alias's extra path.
