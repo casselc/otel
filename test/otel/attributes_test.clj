@@ -1,5 +1,6 @@
 (ns otel.attributes-test
   (:require [clojure.test :refer [deftest is testing]]
+            [otel.any-value :as any]
             [otel.attributes :as attr]))
 
 (deftest keys-normalize-to-strings
@@ -20,10 +21,13 @@
     (is (= {"k" "green"} (attr/normalize {:k :green})))
     (is (= {"k" "a/b"} (attr/normalize {:k :a/b})))))
 
-(deftest nil-values-are-dropped
-  (testing "OTLP has no null attribute value — the key is omitted entirely"
-    (is (= {"a" 1} (attr/normalize {:a 1 :b nil})))
-    (is (= {} (attr/normalize {:b nil})))))
+(deftest nil-values-are-dropped-and-explicit-empty-is-preserved
+  (testing "ordinary application nil retains the existing absent-key behavior"
+    (is (= {"a" 1} (attr/normalize {:a 1 :b nil}))))
+  (testing "the explicit sentinel represents a present empty AnyValue"
+    (let [result (attr/normalize {:a any/empty-value})]
+      (is (= 1 (count result)))
+      (is (any/empty-value? (get result "a"))))))
 
 (deftest homogeneous-sequences-become-arrays
   (is (= {"a" ["x" "y"]} (attr/normalize {:a ["x" "y"]})))
@@ -32,20 +36,32 @@
   (testing "a seq is accepted and realized as a vector"
     (is (= {"a" [1 2 3]} (attr/normalize {:a (map inc [0 1 2])})))))
 
-(deftest heterogeneous-sequences-are-dropped
-  (testing "OTLP arrays are homogeneous; a mixed array has no representation"
-    (is (= {} (attr/normalize {:a [1 "x"]})))
-    (is (= {} (attr/normalize {:a [1 true]})))))
+(deftest heterogeneous-and-recursive-sequences-are-kept
+  (is (= {"a" [1 "x" true]} (attr/normalize {:a [1 "x" true]})))
+  (is (= {"a" [{"nested" 1} [false]]}
+         (attr/normalize {:a [{:nested 1} [false]]}))))
 
 (deftest empty-sequences-are-kept
   (testing "an empty array is representable and carries the fact that it was empty"
     (is (= {"a" []} (attr/normalize {:a []})))))
 
 (deftest unrepresentable-values-are-dropped
-  (testing "maps, sets and functions have no OTLP attribute type"
-    (is (= {} (attr/normalize {:a {:nested 1}})))
+  (testing "sets and functions have no OTLP AnyValue type"
     (is (= {} (attr/normalize {:a #{1 2}})))
     (is (= {} (attr/normalize {:a (fn [] 1)})))))
+
+(deftest maps-and-byte-strings-are-kept
+  (is (= {"a" {"nested" 1}}
+         (attr/normalize {:a {:nested 1}})))
+  (is (= {"a" (any/bytes [0 255])}
+         (attr/normalize {:a (any/bytes [0 255])}))))
+
+(deftest canonical-key-collisions-drop-all-conflicting-entries
+  (let [result (attr/normalize-result {:a 1 "a" 2 :b 3})]
+    (is (= {"b" 3} (:attributes result)))
+    (is (= 2 (:dropped-count result)))
+    (is (= [:duplicate-key :duplicate-key]
+           (mapv :reason (:errors result))))))
 
 (deftest nil-and-empty-input
   (is (= {} (attr/normalize nil)))
@@ -67,9 +83,16 @@
       (is (every? #{"a" "b" "c" "d"} (keys result))))))
 
 (deftest count-limit-counts-only-kept-attributes
-  (testing "a dropped nil must not consume a slot against the limit"
+  (testing "an invalid value must not consume a slot against the limit"
     (let [limits (attr/limits {:count-limit 2})]
-      (is (= 2 (count (attr/normalize {:a nil :b 1 :c 2} limits)))))))
+      (is (= 2 (count (attr/normalize {:a (fn [] 1) :b 1 :c 2} limits)))))))
+
+(deftest normalization-reports-recursive-limit-failures
+  (let [result (attr/normalize-result {:a [[1]] :b "ok"}
+                                      {:max-depth 1})]
+    (is (= {"b" "ok"} (:attributes result)))
+    (is (= 1 (:dropped-count result)))
+    (is (= :depth-limit (get-in result [:errors 0 :reason])))))
 
 (deftest default-limits-are-permissive
   (let [big (zipmap (map #(str "k" %) (range 200)) (range 200))]

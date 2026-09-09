@@ -3,6 +3,7 @@
             [clojure.test :refer [deftest is testing]]
             [hegel.clojure-test :refer [with]]
             [hegel.generator :as g]
+            [otel.any-value :as any]
             [otel.otlp.encode :as encode]
             [otel.otlp.trace-decode :as decode]
             [otel.resource :as resource]))
@@ -92,16 +93,24 @@
     (is (= 1 (:rejected-spans result)))
     (is (= :out-of-range (get-in result [:errors 0 :reason])))))
 
-(deftest unsupported-any-values-are-not-silently-lost
-  (let [bad (assoc-in fixture
-                      ["resourceSpans" 0 "scopeSpans" 0 "spans" 1 "attributes"]
-                      [{"key" "nested" "value" {"kvlistValue" {"values" []}}}])
-        result (decode/decode-request bad)]
-    (is (= 1 (:rejected-spans result)))
-    (is (= :unsupported-any-value (get-in result [:errors 0 :reason])))
-    (is (= ["resourceSpans" 0 "scopeSpans" 0 "spans" 1
-            "attributes" 0 "value" "kvlistValue"]
-           (get-in result [:errors 0 :path])))))
+(deftest recursive-and-byte-any-values-are-preserved
+  (let [request (assoc-in
+                 fixture
+                 ["resourceSpans" 0 "scopeSpans" 0 "spans" 1 "attributes"]
+                 [{"key" "nested"
+                   "value" {"kvlistValue"
+                            {"values"
+                             [{"key" "items"
+                               "value" {"arrayValue"
+                                        {"values" [{"intValue" "1"}
+                                                   {"bytesValue" "AP8="}
+                                                   {}]}}}]}}}])
+        result (decode/decode-request request)
+        items (get-in result [:spans 1 :attributes "nested" "items"])]
+    (is (zero? (:rejected-spans result)))
+    (is (= 1 (first items)))
+    (is (= (any/bytes [0 255]) (second items)))
+    (is (any/empty-value? (nth items 2)))))
 
 (deftest double-value-accepts-an-integer-json-token
   (let [request (assoc-in fixture

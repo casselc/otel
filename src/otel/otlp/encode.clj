@@ -14,7 +14,8 @@
   Spans are grouped resource -> scope -> spans, which is also the compression the
   format is designed around: the resource is written once per batch rather than
   once per span."
-  (:require [otel.resource :as res]))
+  (:require [otel.otlp.any-value :as wire-any]
+            [otel.resource :as res]))
 
 ;; --- primitives -------------------------------------------------------------
 
@@ -26,15 +27,7 @@
 (defn any-value
   "An OTLP AnyValue for an already-normalized attribute value."
   [v]
-  (cond
-    (string? v) {:stringValue v}
-    (or (true? v) (false? v)) {:boolValue v}
-    (integer? v) {:intValue (i64 v)}
-    (float? v) {:doubleValue (double v)}
-    (sequential? v) {:arrayValue {:values (mapv any-value v)}}
-    ;; normalize has already rejected anything else; a string keeps a surprise
-    ;; value from failing the whole export.
-    :else {:stringValue (str v)}))
+  (wire-any/encode v))
 
 (defn key-values
   "An OTLP KeyValue list for an attribute map."

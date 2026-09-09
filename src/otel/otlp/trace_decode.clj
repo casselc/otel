@@ -7,6 +7,7 @@
   layer. Accepted spans use the same immutable ended-span map consumed by this
   SDK's exporters."
   (:require [clojure.string :as str]
+            [otel.otlp.any-value :as wire-any]
             [otel.resource :as resource]))
 
 (def ^:private absent (Object.))
@@ -62,9 +63,6 @@
 (defn- uint32! [v path]
   (decimal-integer! v path 0 4294967295))
 
-(defn- int64! [v path]
-  (decimal-integer! v path -9223372036854775808 9223372036854775807))
-
 (defn- hex-id! [v n path allow-empty?]
   (let [s (string! v path)]
     (cond
@@ -74,54 +72,14 @@
       :else (invalid! path :invalid-id
                       (str n " lowercase hexadecimal characters, not all zero") s))))
 
-(defn- value-kind [v]
-  (cond
-    (string? v) :string
-    (or (true? v) (false? v)) :bool
-    (integer? v) :int
-    (float? v) :double))
-
-(declare any-value!)
-
-(defn- array-value! [m path]
-  (let [values-v (field (object! m path) :values)
-        values (if (present? values-v) (array! values-v (conj path "values")) [])
-        decoded (mapv (fn [i v] (any-value! v (conj path "values" i)))
-                      (range (count values)) values)
-        kinds (set (map value-kind decoded))]
-    (if (<= (count kinds) 1)
-      decoded
-      (invalid! path :heterogeneous-array "an array of one scalar type" decoded))))
-
 (defn- any-value! [v path]
-  (let [m (object! v path)
-        arms (filter (fn [k] (present? (field m k)))
-                     [:stringValue :boolValue :intValue :doubleValue
-                      :arrayValue :kvlistValue :bytesValue])]
-    (when-not (= 1 (count arms))
-      (invalid! path :invalid-any-value "exactly one AnyValue field" m))
-    (let [arm (first arms)
-          x (field m arm)
-          p (conj path (name arm))]
-      (case arm
-        :stringValue (string! x p)
-        :boolValue (if (or (true? x) (false? x)) x
-                       (invalid! p :wrong-type "boolean" x))
-        :intValue (int64! x p)
-        ;; A protobuf double accepts any JSON number token, including `1`.
-        ;; Most parsers represent that spelling as an integer even though the
-        ;; declared wire field is a double.
-        :doubleValue (let [d (when (or (integer? x) (float? x)) (double x))]
-                       (if (and d (= d d) (not= d ##Inf) (not= d ##-Inf))
-                         d
-                         (invalid! p :wrong-type "finite JSON number" x)))
-        :arrayValue (array-value! x p)
-        ;; The SDK's canonical attribute model intentionally has no nested maps
-        ;; or byte strings, so accepting these would silently lose information.
-        :kvlistValue (invalid! p :unsupported-any-value
-                               "scalar or homogeneous scalar array" x)
-        :bytesValue (invalid! p :unsupported-any-value
-                              "scalar or homogeneous scalar array" x)))))
+  (let [{:keys [value error]} (wire-any/decode v)]
+    (if error
+      (invalid! (into path (:path error))
+                (:reason error)
+                (or (:expected error) "bounded canonical AnyValue")
+                (if (contains? error :actual) (:actual error) v))
+      value)))
 
 (defn- attributes! [v path]
   (let [xs (if (present? v) (array! v path) [])]

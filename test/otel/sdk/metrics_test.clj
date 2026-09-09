@@ -1,5 +1,6 @@
 (ns otel.sdk.metrics-test
   (:require [clojure.test :refer [deftest is testing]]
+            [otel.any-value :as any]
             [otel.instrument.runtime :as runtime]
             [otel.metrics :as api]
             [otel.resource :as res]
@@ -203,6 +204,17 @@
     (api/add! (api/counter m2 "b") 1)
     (let [collected (sdk/collect! provider)]
       (is (= #{"lib-a" "lib-b"} (set (map #(get-in % [:scope :name]) collected)))))))
+
+(deftest meter-scope-attributes-use-the-shared-contract
+  (let [provider (sdk/meter-provider {:resource res/empty-resource})
+        meter (sdk/get-meter provider {:name "lib"
+                                       :attributes {:mode :fast
+                                                    :empty any/empty-value
+                                                    :dropped nil}})]
+    (api/add! (api/counter meter "requests") 1)
+    (let [scope (:scope (first (sdk/collect! provider)))]
+      (is (= {"empty" any/empty-value "mode" "fast"} (:attributes scope)))
+      (is (= 1 (:dropped-attributes-count scope))))))
 
 ;; --- periodic reader synchronization ---------------------------------------
 

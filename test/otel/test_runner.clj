@@ -13,7 +13,8 @@
 ;; resolves requires off the source roots, and an explicit list is also what the
 ;; AOT closure needs to see.
 (def all-namespaces
-  '[otel.attributes-test
+  '[otel.any-value-test
+    otel.attributes-test
     otel.context-test
     otel.sdk.clock-test
     otel.sdk-test

@@ -61,6 +61,11 @@ A `:git/sha` must be the full 40-character sha, or a prefix alongside a
 (sdk/shutdown! otel)
 ```
 
+Attribute values keep their OpenTelemetry types, including nested maps and
+arrays, byte strings and an explicit present-empty value. Invalid values are
+dropped without escaping into the instrumented application. See
+[Attribute values](any-values.md) for the supported values and safety limits.
+
 `with-span` makes the span current for the body, ends it on the way out, and on
 a throw records the exception and sets the span's status to `:error` before
 rethrowing. A span started inside another automatically becomes its child.

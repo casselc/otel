@@ -1,6 +1,7 @@
 (ns otel.otlp.encode-test
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.string :as str]
+            [otel.any-value :as any]
             [otel.exporter.memory :as memory]
             [otel.otlp.encode :as enc]
             [otel.otlp.json :as json]
@@ -52,7 +53,12 @@
   (testing "an int is a decimal string — a JSON number is a double and would lose precision"
     (is (= {:intValue "42"} (enc/any-value 42))))
   (is (= {:arrayValue {:values [{:stringValue "a"} {:stringValue "b"}]}}
-         (enc/any-value ["a" "b"]))))
+         (enc/any-value ["a" "b"])))
+  (is (= {} (enc/any-value any/empty-value)))
+  (is (= {:bytesValue "AP8="} (enc/any-value (any/bytes [0 255]))))
+  (is (= {:kvlistValue
+          {:values [{:key "a" :value {:intValue "1"}}]}}
+         (enc/any-value (sorted-map "a" 1)))))
 
 (deftest key-values-shape
   (is (= [{:key "a" :value {:intValue "1"}}] (enc/key-values {"a" 1}))))
