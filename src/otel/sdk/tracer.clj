@@ -7,7 +7,8 @@
   tracer is a thin handle that stamps its instrumentation scope onto the spans it
   creates. That split is why a library can take a tracer at load time without
   knowing or caring how the application configured export."
-  (:require [otel.context :as ctx]
+  (:require [otel.attributes :as attr]
+            [otel.context :as ctx]
             [otel.id :as id]
             [otel.resource :as res]
             [otel.sdk.clock :as clock]
@@ -112,10 +113,12 @@
   optional but recommended, since a backend uses them to tell versions of an
   instrumentation apart."
   [provider {:keys [name version schema-url attributes]}]
-  (->SdkTracer provider {:name name
-                         :version version
-                         :schema-url schema-url
-                         :attributes (or attributes {})}))
+  (->SdkTracer provider
+               (attr/normalize-scope
+                {:name name
+                 :version version
+                 :schema-url schema-url
+                 :attributes attributes})))
 
 (defn force-flush!
   "Block until everything already ended has been handed to the exporters."

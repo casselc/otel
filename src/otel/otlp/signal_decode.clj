@@ -1,6 +1,7 @@
 (ns otel.otlp.signal-decode
   "Strict OTLP/JSON decoders for the SDK's canonical log and metric models."
   (:require [clojure.string :as str]
+            [otel.otlp.any-value :as wire-any]
             [otel.resource :as resource]))
 
 (def ^:private absent (Object.))
@@ -51,34 +52,15 @@
       (invalid! signal path :invalid-id
                 (str "empty or " width " lowercase hexadecimal characters") text))))
 
-(declare any-value!)
 (defn- any-value! [signal v path]
-  (let [m (object! signal v path)
-        arms (filter #(present? (field m %))
-                     [:stringValue :boolValue :intValue :doubleValue
-                      :arrayValue :kvlistValue :bytesValue])]
-    (when-not (= 1 (count arms))
-      (invalid! signal path :invalid-any-value "exactly one supported AnyValue field" m))
-    (let [arm (first arms) x (field m arm) p (conj path (name arm))]
-      (case arm
-        :stringValue (string! signal x p)
-        :boolValue (if (or (true? x) (false? x)) x
-                       (invalid! signal p :wrong-type "boolean" x))
-        :intValue (decimal! signal x p -9223372036854775808 9223372036854775807)
-        :doubleValue (finite-number! signal x p)
-        :arrayValue
-        (let [a (object! signal x p)
-              vv (field a :values)
-              xs (if (present? vv) (array! signal vv (conj p "values")) [])
-              values (mapv #(any-value! signal %1 (conj p "values" %2))
-                           xs (range (count xs)))
-              kinds (set (map #(cond (string? %) :string (boolean? %) :bool
-                                     (integer? %) :int (float? %) :double :else :other)
-                              values))]
-          (if (<= (count kinds) 1) values
-              (invalid! signal p :heterogeneous-array "one scalar type" values)))
-        :kvlistValue (invalid! signal p :unsupported-any-value "scalar or scalar array" x)
-        :bytesValue (invalid! signal p :unsupported-any-value "scalar or scalar array" x)))))
+  (let [{:keys [value error]} (wire-any/decode v)]
+    (if error
+      (invalid! signal
+                (into path (:path error))
+                (:reason error)
+                (or (:expected error) "bounded canonical AnyValue")
+                (if (contains? error :actual) (:actual error) v))
+      value)))
 
 (defn- attributes! [signal v path]
   (let [xs (if (present? v) (array! signal v path) [])]

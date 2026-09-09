@@ -3,6 +3,7 @@
             [hegel.clojure-test :refer [with]]
             [hegel.generator :as g]
             [hegel.stateful :as hs]
+            [otel.any-value :as any]
             [otel.otlp.http-receiver :as receiver]))
 
 (def valid-wire
@@ -225,6 +226,39 @@
     (is (= 503 (:status ((receiver/handler
                           {:parse-body parser :exporter ::traces})
                          (request {:uri receiver/logs-path :body valid-logs-wire})))))))
+
+(deftest log-and-metric-attributes-share-the-recursive-any-value-decoder
+  (let [attribute {"key" "payload"
+                   "value" {"kvlistValue"
+                            {"values"
+                             [{"key" "items"
+                               "value" {"arrayValue"
+                                        {"values" [{"stringValue" "x"}
+                                                   {"bytesValue" "AP8="}
+                                                   {}]}}}]}}}
+        logs (assoc-in valid-logs-wire
+                       ["resourceLogs" 0 "scopeLogs" 0 "logRecords" 0 "attributes"]
+                       [attribute])
+        metrics (assoc-in valid-metrics-wire
+                          ["resourceMetrics" 0 "scopeMetrics" 0 "metrics" 0
+                           "gauge" "dataPoints" 0 "attributes"]
+                          [attribute])
+        seen-logs (atom []) seen-metrics (atom [])
+        handler (receiver/handler
+                 {:parse-body parser :log-exporter ::logs :metric-exporter ::metrics
+                  :export-logs! (fn [_ records] (reset! seen-logs records) true)
+                  :export-metrics! (fn [_ _ collected]
+                                     (reset! seen-metrics collected) true)})]
+    (is (= 200 (:status (handler (request {:uri receiver/logs-path :body logs})))))
+    (is (= 200 (:status (handler (request {:uri receiver/metrics-path :body metrics})))))
+    (let [log-items (get-in @seen-logs [0 :attributes "payload" "items"])
+          metric-items (get-in @seen-metrics
+                               [0 :metrics 0 :data-points 0 :attributes
+                                "payload" "items"])]
+      (doseq [items [log-items metric-items]]
+        (is (= "x" (first items)))
+        (is (= (any/bytes [0 255]) (second items)))
+        (is (any/empty-value? (nth items 2)))))))
 
 (deftest signal-specific-partial-success-fields
   (let [logs (update-in valid-logs-wire ["resourceLogs" 0 "scopeLogs" 0 "logRecords"]

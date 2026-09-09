@@ -209,8 +209,10 @@
 
 (defn get-meter
   "A meter for one instrumentation scope."
-  [provider {:keys [name version schema-url]}]
-  (let [m (->SdkMeter {:name name :version version :schema-url schema-url}
+  [provider {:keys [name version schema-url attributes]}]
+  (let [m (->SdkMeter (attr/normalize-scope
+                       {:name name :version version :schema-url schema-url
+                        :attributes attributes})
                       (atom [])
                       (:clock provider))]
     (swap! (:meters provider) conj m)

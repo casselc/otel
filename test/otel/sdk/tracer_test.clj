@@ -1,8 +1,10 @@
 (ns otel.sdk.tracer-test
   (:require [clojure.test :refer [deftest is testing]]
+            [otel.any-value :as any]
             [otel.context :as ctx]
             [otel.exporter.memory :as memory]
             [otel.id :as id]
+            [otel.otlp.encode :as encode]
             [otel.resource :as res]
             [otel.sdk.clock :as clock]
             [otel.sdk.export :as export]
@@ -73,6 +75,29 @@
       (is (= "test-scope" (get-in s [:scope :name])))
       (is (= "1.2.3" (get-in s [:scope :version])))
       (is (= "test-svc" (get (res/attributes (:resource s)) "service.name"))))))
+
+(deftest scope-attributes-normalize-before-they-can-break-a-batch
+  (let [{:keys [provider exporter]} (setup)
+        tracer (sdk/get-tracer
+                provider
+                {:name "typed-scope"
+                 :attributes {:release.channel :stable
+                              'build.id "42"
+                              :empty any/empty-value
+                              :nil-value nil
+                              :unsupported #{1}}})]
+    (trace/with-span [sp tracer "valid-span"])
+    (let [[recorded] (memory/spans exporter)
+          scope (:scope recorded)
+          request (encode/traces-request [recorded])]
+      (is (= {"build.id" "42"
+              "empty" any/empty-value
+              "release.channel" "stable"}
+             (:attributes scope)))
+      (is (= 2 (:dropped-attributes-count scope)))
+      (is (= 1 (count (get-in request [:resourceSpans 0 :scopeSpans 0 :spans]))))
+      (is (= 2 (get-in request [:resourceSpans 0 :scopeSpans 0 :scope
+                                :droppedAttributesCount]))))))
 
 ;; --- timing -----------------------------------------------------------------
 

@@ -2,6 +2,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.tools.logging :as log]
             [clojure.tools.logging.impl :as impl]
+            [otel.any-value :as any]
             [otel.bridge.tools-logging :as bridge]
             [otel.exporter.memory :as memory]
             [otel.logs :as logs]
@@ -70,6 +71,18 @@
     (let [[r] (memory/records exporter)]
       (is (= "scope" (get-in r [:scope :name])))
       (is (= "svc" (get (res/attributes (:resource r)) "service.name"))))))
+
+(deftest logger-scope-attributes-use-the-shared-contract
+  (let [{:keys [provider exporter]} (setup)
+        logger (sdk-logs/get-logger provider {:name "scope"
+                                              :attributes {:mode :structured
+                                                           :empty any/empty-value
+                                                           :dropped nil}})]
+    (logs/emit! logger {:body "x" :severity :info})
+    (let [scope (:scope (first (memory/records exporter)))]
+      (is (= {"empty" any/empty-value "mode" "structured"}
+             (:attributes scope)))
+      (is (= 1 (:dropped-attributes-count scope))))))
 
 (deftest an-explicit-event-timestamp-is-kept
   (let [{:keys [logger exporter]} (setup)]

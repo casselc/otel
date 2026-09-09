@@ -143,7 +143,8 @@
 
 (defrecord SdkLoggerProvider [resource clock limits processor shutdown?]
   api/LoggerProvider
-  (get-logger* [this scope] (->SdkLogger this scope)))
+  (get-logger* [this scope]
+    (->SdkLogger this (attr/normalize-scope scope))))
 
 (defn logger-provider
   "Build a logger provider.
@@ -159,8 +160,9 @@
 
 (defn get-logger
   "A logger for one instrumentation scope."
-  [provider {:keys [name version schema-url]}]
-  (api/get-logger* provider {:name name :version version :schema-url schema-url}))
+  [provider {:keys [name version schema-url attributes]}]
+  (api/get-logger* provider {:name name :version version :schema-url schema-url
+                             :attributes attributes}))
 
 (defn force-flush! [provider] (export/force-flush! (:processor provider)))
 

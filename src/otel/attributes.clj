@@ -1,109 +1,127 @@
 (ns otel.attributes
-  "Attribute normalization against the OpenTelemetry common data model.
+  "Attribute collection normalization against the OpenTelemetry data model.
 
-  An OTLP attribute is a string key paired with an AnyValue, and AnyValue has
-  exactly these shapes: string, bool, int, double, and homogeneous arrays of
-  those. Clojure code naturally hands us keyword keys, keyword values, nils,
-  nested maps and mixed vectors, none of which OTLP can carry. Normalizing at the
-  boundary — rather than at export time — means an attribute that cannot be
-  represented is dropped at the call that set it, and everything downstream
-  (samplers, processors, exporters) can assume a clean map.
+  Values are normalized once, at the SDK boundary, into the portable algebra in
+  otel.any-value. Invalid entries are dropped rather than thrown into observed
+  application code. normalize-result retains bounded reasons for callers that
+  can expose SDK diagnostics; normalize preserves the original map-only API."
+  (:refer-clojure :exclude [merge])
+  (:require [otel.any-value :as any]))
 
-  Dropping rather than throwing is deliberate and matches the other SDKs:
-  telemetry is not the workload, and a bad attribute value must never take down
-  the code being instrumented."
-  (:refer-clojure :exclude [merge]))
-
-(def default-count-limit
-  "Attributes kept per span/event/link. The spec's default."
-  128)
+(def default-count-limit 128)
+(def ^:private max-reported-errors 16)
 
 (defn limits
-  "Attribute limits. :count-limit caps how many attributes are kept (default 128);
-  :value-length-limit truncates string values and strings inside arrays (default
-  unlimited)."
-  [{:keys [count-limit value-length-limit]}]
-  {:count-limit (or count-limit default-count-limit)
-   :value-length-limit value-length-limit})
+  "Attribute limits. :count-limit caps top-level entries. The value length,
+  depth, node and byte limits apply recursively to each AnyValue; max bytes and
+  nodes are also enforced over the complete attribute collection."
+  [{:keys [count-limit value-length-limit max-depth max-nodes max-bytes]}]
+  (clojure.core/merge
+   any/default-limits
+   {:count-limit (or count-limit default-count-limit)}
+   (cond-> {}
+     (some? value-length-limit) (assoc :value-length-limit value-length-limit)
+     (some? max-depth) (assoc :max-depth max-depth)
+     (some? max-nodes) (assoc :max-nodes max-nodes)
+     (some? max-bytes) (assoc :max-bytes max-bytes))))
 
 (def default-limits (limits {}))
 
-(defn- attr-key
-  "The OTLP string form of an attribute key. A namespaced keyword keeps its
-  namespace (:db/system -> \"db/system\") because that distinction is meaningful
-  to the caller; `name` alone would silently collapse :db/system and :http/system."
-  [k]
-  (cond
-    (string? k) k
-    (keyword? k) (subs (str k) 1)
-    (symbol? k) (str k)
-    :else (str k)))
+(defn- report-error [result error]
+  (-> result
+      (update :dropped-count inc)
+      (update :errors #(if (< (count %) max-reported-errors)
+                         (conj % error) %))))
 
-(defn- scalar-value
-  "The OTLP scalar for `v`, or ::invalid if it has no representation. Keywords
-  render as their name so idiomatic Clojure enum-ish values survive."
-  [v]
-  (cond
-    (string? v) v
-    ;; boolean? before integer?: on the JVM these are disjoint, but checking
-    ;; explicitly documents that true/false must land on the bool arm.
-    (or (true? v) (false? v)) v
-    (integer? v) v
-    (float? v) v
-    (keyword? v) (subs (str v) 1)
-    (symbol? v) (str v)
-    :else ::invalid))
+(defn- reported-key [key]
+  (when key (subs key 0 (min 128 (count key)))))
 
-(defn- scalar-kind
-  "The OTLP type tag of an already-validated scalar, for array homogeneity checks."
-  [v]
-  (cond
-    (string? v) :string
-    (or (true? v) (false? v)) :bool
-    (integer? v) :int
-    (float? v) :double))
+(defn- source-entries [attrs]
+  (->> attrs
+       (mapv (fn [[key value]] [(any/key-string key) key value]))
+       (sort-by (fn [[canonical _ _]] (or canonical "")))))
 
-(defn- truncate
-  [limit v]
-  (if (and limit (string? v) (> (count v) limit))
-    (subs v 0 limit)
-    v))
+(defn normalize-result
+  "Normalize an attribute collection without throwing for bad application data.
 
-(defn- normalize-value
-  "The OTLP value for `v` under `value-limit`, or ::invalid."
-  [v value-limit]
-  (if (and (sequential? v) (not (string? v)))
-    ;; An array: every element must be a valid scalar AND they must all share one
-    ;; type, since OTLP arrays are typed. An empty array is valid and stays empty.
-    (let [elems (map #(scalar-value %) v)]
-      (cond
-        (some #(= ::invalid %) elems) ::invalid
-        (empty? elems) []
-        (apply = (map scalar-kind elems)) (mapv #(truncate value-limit %) elems)
-        :else ::invalid))
-    (let [s (scalar-value v)]
-      (if (= ::invalid s) ::invalid (truncate value-limit s)))))
+  The result contains :attributes, :dropped-count, :truncated-count and at most
+  sixteen structured :errors. Canonical-key collisions drop every conflicting
+  entry, so map traversal order can never select an arbitrary winner."
+  ([attrs] (normalize-result attrs default-limits))
+  ([attrs options]
+   (let [options (limits options)]
+     (if (or (nil? attrs) (and (map? attrs) (empty? attrs)))
+       {:attributes {} :dropped-count 0 :truncated-count 0 :errors []}
+       (if-not (map? attrs)
+         {:attributes {} :dropped-count 1 :truncated-count 0
+          :errors [{:reason :invalid-attribute-collection}]}
+         (let [entries (source-entries attrs)
+               frequencies (frequencies (keep first entries))
+               initial {:attributes (sorted-map)
+                        :dropped-count 0 :truncated-count 0 :errors []
+                        :nodes 0 :bytes 0}]
+           (->
+            (reduce
+             (fn [result [key _source-key value]]
+               (cond
+                 (nil? key)
+                 (report-error result {:reason :invalid-key})
+
+                 (empty? key)
+                 (report-error result {:key "" :reason :empty-key})
+
+                 (> (get frequencies key 0) 1)
+                 (report-error result {:key (reported-key key)
+                                       :reason :duplicate-key})
+
+                 (>= (count (:attributes result)) (:count-limit options))
+                 (report-error result {:key (reported-key key)
+                                       :reason :count-limit})
+
+                 :else
+                 (let [key-bytes (* 4 (count key))
+                       remaining-nodes (- (:max-nodes options) (:nodes result))
+                       remaining-bytes (- (:max-bytes options)
+                                          (:bytes result) key-bytes)
+                       normalized
+                       (if (neg? remaining-nodes)
+                         {:error :node-limit}
+                         (if (neg? remaining-bytes)
+                           {:error :byte-limit}
+                           (any/canonicalize
+                            value
+                            (assoc options
+                                   :max-nodes remaining-nodes
+                                   :max-bytes remaining-bytes))))]
+                   (if-let [reason (:error normalized)]
+                     (report-error result {:key (reported-key key) :reason reason})
+                     (-> result
+                         (assoc-in [:attributes key] (:value normalized))
+                         (update :nodes + (:nodes normalized))
+                         (update :bytes + key-bytes (:bytes normalized))
+                         (update :truncated-count +
+                                 (if (:truncated? normalized) 1 0)))))))
+             initial entries)
+            (dissoc :nodes :bytes))))))))
 
 (defn normalize
-  "Normalize `attrs` to an OTLP-representable map: string keys, scalar or
-  homogeneous-array values. Entries whose value has no OTLP representation —
-  including nil, maps, sets and mixed arrays — are dropped, and at most
-  :count-limit entries are kept."
-  ([attrs] (normalize attrs default-limits))
-  ([attrs {:keys [count-limit value-length-limit]}]
-   (if (empty? attrs)
-     {}
-     ;; reduced over the input so the count limit applies to KEPT entries: a map
-     ;; whose first entries are all nil-valued must not exhaust the budget.
-     (reduce (fn [acc [k v]]
-               (if (>= (count acc) count-limit)
-                 (reduced acc)
-                 (let [nv (normalize-value v value-length-limit)]
-                   (if (= ::invalid nv)
-                     acc
-                     (assoc acc (attr-key k) nv)))))
-             {}
-             attrs))))
+  "Return only the canonical attribute map, preserving the original public API.
+  Use normalize-result when dropped/truncated diagnostics are needed."
+  ([attrs] (:attributes (normalize-result attrs default-limits)))
+  ([attrs options] (:attributes (normalize-result attrs options))))
+
+(defn normalize-scope
+  "Normalize one instrumentation scope and account for attributes rejected at
+  registration. Keeping this at the shared SDK boundary prevents a bad scope
+  value from reaching strict OTLP encoding and dropping an otherwise valid
+  batch."
+  [scope]
+  (let [{:keys [attributes dropped-count]}
+        (normalize-result (:attributes scope) default-limits)
+        dropped-count (+ (or (:dropped-attributes-count scope) 0)
+                         dropped-count)]
+    (cond-> (assoc scope :attributes attributes)
+      (pos? dropped-count) (assoc :dropped-attributes-count dropped-count))))
 
 (defn merge-attrs
   "Normalize and merge attribute maps left to right; later values win."
