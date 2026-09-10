@@ -16,6 +16,7 @@
   '[otel.any-value-test
     otel.attribute-schema-test
     otel.attributes-test
+    otel.ci-workflow-test
     otel.context-test
     otel.dependency-resolution-test
     otel.sdk.clock-test

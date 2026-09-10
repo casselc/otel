@@ -31,6 +31,13 @@ will not silently fall back to a millisecond clock: that is the exact defect the
 two-clock design exists to avoid, and a quiet degradation would make every span
 duration wrong in a way nothing downstream could detect.
 
+Pull requests and `main` are tested on hosted Linux with the released Jolt
+v0.8.3 binary. The workflow pins the Jolt source revision, installer checksum,
+release archive checksum, and checkout action revision; it verifies the runtime
+version and prints `-Srepro -Sdescribe` before running the complete suite in a
+repository-local cache. The matching provenance record lives in
+`resources/otel/ci-toolchain.edn` and is enforced by the test suite.
+
 ## Install
 
 ```clojure
