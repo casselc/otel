@@ -31,6 +31,13 @@ will not silently fall back to a millisecond clock: that is the exact defect the
 two-clock design exists to avoid, and a quiet degradation would make every span
 duration wrong in a way nothing downstream could detect.
 
+Pull requests and `main` are tested on hosted Linux with the released Jolt
+v0.8.3 binary. The workflow pins the Jolt source revision, installer checksum,
+release archive checksum, and checkout action revision; it verifies the runtime
+version and prints `-Srepro -Sdescribe` before running the complete suite in a
+repository-local cache. The matching provenance record lives in
+`resources/otel/ci-toolchain.edn` and is enforced by the test suite.
+
 ## Install
 
 ```clojure
@@ -61,6 +68,14 @@ A `:git/sha` must be the full 40-character sha, or a prefix alongside a
 ;; Before the process exits — a batch processor is still holding spans.
 (sdk/shutdown! otel)
 ```
+
+Shutdown rejects new telemetry, drains accepted work, waits for each background
+worker to terminate, and only then shuts down its exporter. It has no separate
+worker-wait timeout: exporter-specific timeouts or cancellation own any bound
+on exporter work, while treating an arbitrary join timeout as quiescence could
+close an exporter still in use. If the waiting thread is interrupted, every
+concurrent or later shutdown caller observes the same failure and the exporter
+remains open.
 
 Attribute values keep their OpenTelemetry types, including nested maps and
 arrays, byte strings and an explicit present-empty value. Invalid values are

@@ -6,6 +6,19 @@
   []
   (atom nil))
 
+(defn await-worker!
+  "Wait until `worker` has terminated before releasing resources it may own.
+
+  There is deliberately no internal timeout. A timeout cannot establish worker
+  quiescence, so treating one as success would allow resource shutdown to race
+  an in-flight operation. If the wait is interrupted or otherwise fails, the
+  exception propagates and the owning terminal action must leave the resource
+  open."
+  [worker]
+  (when worker
+    (.join worker))
+  true)
+
 (defn- observe!
   [outcome]
   (let [{:keys [value throwable]} @outcome]

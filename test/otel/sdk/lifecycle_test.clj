@@ -37,6 +37,13 @@
       (is (identical? failure (run)))
       (is (= 1 @calls)))))
 
+(defn- caught
+  [f]
+  (try
+    {:value (f)}
+    (catch :default throwable
+      {:throwable throwable})))
+
 (defrecord CountingExporter [span-calls log-calls metric-calls
                              span-marker log-marker metric-marker]
   export/SpanExporter
@@ -51,6 +58,124 @@
   export/MetricExporter
   (export-metrics! [_ _ _] true)
   (shutdown-metric-exporter! [_] (swap! metric-calls inc) metric-marker))
+
+(defn- worker-owner-case
+  [signal]
+  (let [span-calls (atom 0)
+        log-calls (atom 0)
+        metric-calls (atom 0)
+        markers {:span (atom :span-result)
+                 :log (atom :log-result)
+                 :metric (atom :metric-result)}
+        exporter (->CountingExporter span-calls log-calls metric-calls
+                                     (:span markers) (:log markers)
+                                     (:metric markers))]
+    (case signal
+      :span
+      (let [owner (export/batch-processor exporter {:schedule-delay-ms 60000})]
+        {:owner owner
+         :background-worker (:worker owner)
+         :shutdown #(export/shutdown! %)
+         :shutdown-calls span-calls
+         :marker (:span markers)
+         :late-accepted? #(do
+                            (export/on-end % {:span-context {:trace-flags 1}})
+                            (seq (:queue @(:state %))))})
+
+      :log
+      (let [owner (logs/batch-processor exporter {:schedule-delay-ms 60000})]
+        {:owner owner
+         :background-worker (:worker owner)
+         :shutdown #(export/shutdown! %)
+         :shutdown-calls log-calls
+         :marker (:log markers)
+         :late-accepted? #(do
+                            (export/on-end % {:body "late"})
+                            (seq (:queue @(:state %))))})
+
+      :metric
+      (let [provider (metrics/meter-provider {:resource res/empty-resource})
+            owner (metrics/periodic-reader provider exporter {:interval-ms 60000})]
+        {:owner owner
+         :background-worker (:worker owner)
+         :shutdown #(export/shutdown! %)
+         :shutdown-calls metric-calls
+         :marker (:metric markers)
+         :late-accepted? #(export/force-flush! %)}))))
+
+(defn- exercise-blocked-worker-shutdown!
+  [signal interrupt?]
+  (let [{:keys [owner background-worker shutdown shutdown-calls marker
+                late-accepted?]}
+        (worker-owner-case signal)
+        worker-started (promise)
+        release-worker (promise)
+        worker (Thread. (fn []
+                          (deliver worker-started true)
+                          @release-worker))
+        owner (assoc owner :worker worker)
+        awaiting-worker (promise)
+        await-worker! lifecycle/await-worker!
+        invoked (repeatedly 3 promise)
+        outcomes (repeatedly 3 promise)
+        callers (mapv (fn [invoked outcome]
+                        (Thread. (fn []
+                                   (deliver invoked true)
+                                   (deliver outcome (caught #(shutdown owner))))))
+                      invoked outcomes)]
+    (try
+      (.start worker)
+      (is (= true (deref worker-started 2000 ::timeout)))
+      (with-redefs [lifecycle/await-worker!
+                    (fn [worker]
+                      (deliver awaiting-worker true)
+                      (await-worker! worker))]
+        ;; Start the terminal owner first so the interruption case targets the
+        ;; thread actually blocked in join, not a follower awaiting its result.
+        (.start (first callers))
+        (is (= true (deref (first invoked) 2000 ::timeout)))
+        (is (= true (deref awaiting-worker 2000 ::timeout)))
+        (doseq [caller (next callers)] (.start caller))
+        (is (every? #(= true (deref % 2000 ::timeout)) invoked))
+        (is (every? #(= ::timeout (deref % 50 ::timeout)) outcomes)
+            (str signal " shutdown callers wait for worker quiescence"))
+        (is (zero? @shutdown-calls)
+            (str signal " exporter remains open while worker is live"))
+        (if interrupt?
+          (.interrupt (first callers))
+          (deliver release-worker true))
+        (let [results (mapv #(deref % 2000 ::timeout) outcomes)]
+          (if interrupt?
+            (let [failures (mapv :throwable results)]
+              (is (every? some? failures))
+              (is (every? #(identical? (first failures) %) failures)
+                  (str signal " callers share the interrupted terminal failure"))
+              (is (= java.lang.InterruptedException (class (first failures))))
+              (is (zero? @shutdown-calls)
+                  (str signal " interrupted wait cannot release exporter")))
+            (do
+              (is (every? #(identical? marker (:value %)) results))
+              (is (= 1 @shutdown-calls)
+                  (str signal " exporter shuts down exactly once"))
+              (is (not (late-accepted? owner))
+                  (str signal " rejects work after shutdown"))))))
+      (finally
+        (deliver release-worker true)
+        (swap! (:state owner) assoc :shutdown? true)
+        (doseq [caller callers]
+          (try (.join caller 2000) (catch :default _ nil)))
+        (try (.join worker 2000) (catch :default _ nil))
+        (try (.join background-worker 2000) (catch :default _ nil))))))
+
+(deftest worker-quiescence-precedes-exporter-shutdown
+  (doseq [signal [:span :metric :log]]
+    (testing (name signal)
+      (exercise-blocked-worker-shutdown! signal false))))
+
+(deftest interrupted-worker-wait-is-a-shared-fail-safe-result
+  (doseq [signal [:span :metric :log]]
+    (testing (name signal)
+      (exercise-blocked-worker-shutdown! signal true))))
 
 (deftest each-signal-owner-invokes-its-exporter-once
   (let [span-calls (atom 0)

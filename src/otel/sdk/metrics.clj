@@ -303,7 +303,7 @@
         (locking state
           (swap! state assoc :shutdown? true)
           (collect-and-export! provider exporter))
-        (when worker (try (.join worker 5000) (catch :default _ nil)))
+        (lifecycle/await-worker! worker)
         (export/shutdown-metric-exporter! exporter)))))
 
 (defn periodic-reader

@@ -1,0 +1,8 @@
+{:jolt
+ {:version "0.8.3"
+  :source-commit "343f730922cf16fafe673b466cedcdcfe0596854"
+  :installer-sha256 "6e9e16d1db9875fd3e52e5143eab71375c00f44f3b5d321d61e9996a3c948736"
+  :linux-x86-64-archive-sha256 "e567297a6a840d9988a1aa082beb430aeaa0e6610a82a6f9ee0564e117745147"}
+ :checkout
+ {:revision "11bd71901bbe5b1630ceea73d27597364c9af683"
+  :release "v4.2.2"}}
