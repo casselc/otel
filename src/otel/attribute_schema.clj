@@ -1,0 +1,470 @@
+(ns otel.attribute-schema
+  "Deterministic, storage-neutral hints inferred from OpenTelemetry source forms.
+
+  Source is read as data and never evaluated. Unknown and conflicting evidence
+  stays visible so a storage consumer cannot mistake a hint for a guarantee."
+  (:require [clojure.string :as str]
+            [otel.any-value :as any]
+            [otel.attribute-schema.reader]))
+
+(def schema-id "otel.attribute-schema/v1")
+
+(def ^:private reader-namespace 'otel.attribute-schema.reader)
+
+(def ^:private call-kinds
+  {'otel.trace/with-span :with-span
+   'otel.trace/start-span :start-span
+   'otel.trace/set-attribute! :set-attribute
+   'otel.trace/set-attributes! :set-attributes
+   'otel.metrics/add! :metric
+   'otel.metrics/add-delta! :metric
+   'otel.metrics/record! :metric
+   'otel.metrics/set-value! :metric
+   'otel.metrics/observe! :metric
+   'otel.logs/emit! :log
+   'otel.resource/resource :resource})
+
+(def ^:private cast-types
+  {'long :int64 'clojure.core/long :int64
+   'int :int64 'clojure.core/int :int64
+   'double :double 'clojure.core/double :double
+   'float :double 'clojure.core/float :double
+   'boolean :boolean 'clojure.core/boolean :boolean
+   'str :string 'clojure.core/str :string
+   'name :string 'clojure.core/name :string})
+
+(defn- problem! [message data]
+  (throw (ex-info message (assoc data :type ::invalid-schema-source))))
+
+(defn canonical-source
+  "Validate and return one normalized project-relative source path."
+  [source]
+  (let [source (str source)
+        parts (str/split source #"/")]
+    (when (or (empty? source)
+              (str/starts-with? source "/")
+              (str/includes? source "\\")
+              (re-matches #"[A-Za-z]:.*" source)
+              (some #(or (= "" %) (= "." %) (= ".." %)) parts))
+      (problem! "attribute schema source must be a normalized relative path"
+                {:source source}))
+    source))
+
+(defn read-forms
+  "Read every form in text without evaluation."
+  [source text]
+  (let [source (canonical-source source)]
+    (try
+      {:source source
+       :forms (binding [*ns* (the-ns reader-namespace)
+                        *read-eval* false
+                        *data-readers* {}
+                        *default-data-reader-fn* nil]
+                (read-string (str "[" text "\n]")))}
+      (catch :default _error
+        (problem! "could not read attribute schema source"
+                  {:source source
+                   :reason :unsupported-source-syntax})))))
+
+(defn- require-env [forms]
+  (let [ns-form (first (filter #(and (seq? %) (= 'ns (first %))) forms))
+        clauses (drop 2 ns-form)
+        specs (mapcat rest (filter #(and (seq? %) (= :require (first %))) clauses))]
+    (reduce
+     (fn [env spec]
+       (if-not (vector? spec)
+         env
+         (let [target (first spec)
+               ;; Libspecs may contain standalone reader flags in addition to
+               ;; key/value options. Scan only the options this analyzer uses;
+               ;; this is portable to Jolt, whose transient maps do not accept
+               ;; the list pairs produced by partition.
+               options (loop [remaining (rest spec) result {}]
+                         (if-let [option (first remaining)]
+                           (if (and (contains? #{:as :refer} option)
+                                    (next remaining))
+                             (recur (nnext remaining)
+                                    (assoc result option (second remaining)))
+                             (recur (next remaining) result))
+                           result))
+               alias (:as options)
+               referred (:refer options)]
+           (cond-> env
+             alias (assoc-in [:aliases alias] target)
+             (vector? referred)
+             (update :refers into
+                     (map (fn [name]
+                            [name (symbol (str target) (str name))])
+                          referred))))))
+     {:aliases {} :refers {}} specs)))
+
+(defn- resolve-symbol [env value]
+  (if-not (symbol? value)
+    value
+    (if-let [ns-part (namespace value)]
+      (if-let [target (get-in env [:aliases (symbol ns-part)])]
+        (symbol (str target) (name value))
+        value)
+      (get-in env [:refers value] value))))
+
+(declare infer-value-form*)
+
+(defn- type-sort [types]
+  (->> types distinct (sort-by pr-str) vec))
+
+(defn- descriptor-contains? [descriptor target]
+  (cond
+    (= target descriptor) true
+    (map? descriptor) (some #(descriptor-contains? % target) (vals descriptor))
+    (sequential? descriptor) (some #(descriptor-contains? % target) descriptor)
+    :else false))
+
+(defn- literal-key [form quoted?]
+  (cond
+    (string? form) form
+    ;; read-string cannot reconstruct a source namespace before it has read the
+    ;; ns form. An auto-resolved ::key therefore lands in this analyzer's
+    ;; namespace; treat it as dynamic rather than publish a false key.
+    (and (keyword? form) (= (str reader-namespace) (namespace form))) nil
+    (keyword? form) (subs (str form) 1)
+    (and quoted? (symbol? form)) (str form)
+    (and (seq? form) (= 'quote (first form)) (= 2 (count form)))
+    (literal-key (second form) true)
+    :else nil))
+
+(defn- infer-map [env form quoted?]
+  (let [entries (mapv (fn [[key value]]
+                        [(literal-key key quoted?)
+                         (:type (infer-value-form* env value quoted?))])
+                      form)
+        keys (mapv first entries)]
+    (cond
+      (some nil? keys)
+      {:type {:kvlist :unknown} :kind :dynamic}
+      (not= (count keys) (count (set keys)))
+      {:type {:kvlist :invalid} :kind :literal}
+      :else
+      (let [type {:kvlist (into (sorted-map) entries)}]
+        {:type type
+         :kind (if (descriptor-contains? type :unknown)
+                 :dynamic :literal)}))))
+
+(defn- infer-array [env form quoted?]
+  (let [values (mapv #(:type (infer-value-form* env % quoted?)) form)]
+    {:type {:array (type-sort values)}
+     :kind (if (some #(descriptor-contains? % :unknown) values)
+             :dynamic :literal)}))
+
+(defn- infer-value-form* [env form quoted?]
+  (cond
+    (nil? form) {:type :invalid :kind :literal}
+    (string? form) {:type :string :kind :literal}
+    (or (true? form) (false? form)) {:type :boolean :kind :literal}
+    (integer? form) {:type (if (<= any/min-int64 form any/max-int64)
+                             :int64 :invalid)
+                     :kind :literal}
+    (float? form) {:type :double :kind :literal}
+    (keyword? form) {:type :string :kind :literal}
+
+    (symbol? form)
+    (if quoted?
+      {:type :string :kind :literal}
+      (if (= 'otel.any-value/empty-value (resolve-symbol env form))
+        {:type :empty :kind :constructor}
+        {:type :unknown :kind :dynamic}))
+
+    (vector? form) (infer-array env form quoted?)
+    (map? form) (infer-map env form quoted?)
+
+    (and quoted? (sequential? form)) (infer-array env form true)
+
+    (seq? form)
+    (let [op (resolve-symbol env (first form))]
+      (cond
+        (and (= 'quote op) (= 2 (count form)))
+        (infer-value-form* env (second form) true)
+        (= 'otel.any-value/bytes op) {:type :bytes :kind :constructor}
+        (contains? cast-types op) {:type (get cast-types op) :kind :cast}
+        :else {:type :unknown :kind :dynamic}))
+
+    :else {:type :invalid :kind :literal}))
+
+(defn infer-value-form
+  "Infer one quoted value form. Unresolved expressions return :unknown."
+  ([form] (infer-value-form form {}))
+  ([form aliases]
+   (infer-value-form* {:aliases aliases :refers {}} form false)))
+
+(defn- evidence [source form kind]
+  (cond-> {:source source
+           :kind kind
+           :authority (case kind
+                        :literal :literal
+                        (:constructor :cast) :expression
+                        :unknown)}
+    (:line (meta form)) (assoc :line (:line (meta form)))))
+
+(defn- entry [source signal key value-form env form]
+  (let [{:keys [type kind]} (infer-value-form* env value-form false)]
+    {:signal signal :location :attributes :key key :types [type]
+     :unknown? (boolean (descriptor-contains? type :unknown))
+     :invalid? (boolean (descriptor-contains? type :invalid))
+     :evidence [(evidence source form kind)]}))
+
+(defn- inferred-attributes [source signal form env call-form]
+  (if-not (map? form)
+    {:entries []
+     :dynamic-keys [{:signal signal :location :attributes
+                     :evidence [(evidence source call-form :dynamic)]}]}
+    (reduce
+     (fn [result [key value]]
+       (if-let [key (literal-key key false)]
+         (update result :entries conj (entry source signal key value env call-form))
+         (update result :dynamic-keys conj
+                 {:signal signal :location :attributes
+                  :evidence [(evidence source call-form :dynamic)]})))
+     {:entries [] :dynamic-keys []} form)))
+
+(defn- opts-attributes [source signal form env call-form]
+  (if (and (map? form) (contains? form :attributes))
+    (inferred-attributes source signal (:attributes form) env call-form)
+    {:entries [] :dynamic-keys []}))
+
+(defn- empty-found [] {:entries [] :dynamic-keys []})
+
+(defn- call-evidence [source form env]
+  (case (get call-kinds (resolve-symbol env (first form)))
+    :with-span
+    (let [binding (second form)]
+      (if (and (vector? binding) (= 4 (count binding)))
+        (opts-attributes source :span (nth binding 3) env form)
+        (empty-found)))
+
+    :start-span
+    (if (>= (count form) 4)
+      (opts-attributes source :span (nth form 3) env form)
+      (empty-found))
+
+    :set-attribute
+    (if (>= (count form) 4)
+      (if-let [key (literal-key (nth form 2) false)]
+        {:entries [(entry source :span key (nth form 3) env form)]
+         :dynamic-keys []}
+        {:entries []
+         :dynamic-keys [{:signal :span :location :attributes
+                         :evidence [(evidence source form :dynamic)]}]})
+      (empty-found))
+
+    :set-attributes
+    (if (>= (count form) 3)
+      (inferred-attributes source :span (nth form 2) env form)
+      (empty-found))
+
+    :metric
+    (if (>= (count form) 4)
+      (inferred-attributes source :metric (nth form 3) env form)
+      (empty-found))
+
+    :log
+    (if (and (>= (count form) 3) (map? (nth form 2))
+             (contains? (nth form 2) :attributes))
+      (inferred-attributes source :log (:attributes (nth form 2)) env form)
+      (empty-found))
+
+    :resource
+    (if (>= (count form) 2)
+      (inferred-attributes source :resource (nth form 1) env form)
+      (empty-found))
+
+    (empty-found)))
+
+(defn- walk-evidence [source form env]
+  (let [own (if (seq? form) (call-evidence source form env) (empty-found))]
+    (if (and (seq? form) (= 'quote (resolve-symbol env (first form))))
+      own
+      (reduce
+       (fn [result child]
+         (let [found (walk-evidence source child env)]
+           (-> result
+               (update :entries into (:entries found))
+               (update :dynamic-keys into (:dynamic-keys found)))))
+       own
+       (cond
+         (map? form) (mapcat identity form)
+         (coll? form) form
+         :else [])))))
+
+(defn- evidence-sort-key [item]
+  [(:source item) (or (:line item) 0) (str (:kind item))])
+
+(defn- merge-entry-group [entries]
+  (let [types (type-sort (mapcat :types entries))
+        concrete (remove #{:unknown :invalid} types)]
+    {:signal (:signal (first entries))
+     :location (:location (first entries))
+     :key (:key (first entries))
+     :types types
+     :unknown? (boolean (some :unknown? entries))
+     :invalid? (boolean (some :invalid? entries))
+     :conflict? (> (count concrete) 1)
+     :evidence (->> entries (mapcat :evidence) distinct
+                    (sort-by evidence-sort-key) vec)}))
+
+(defn- canonical-fragment [sources entries dynamic-keys]
+  (let [entries (->> entries
+                     (group-by (juxt :signal :location :key))
+                     vals (map merge-entry-group)
+                     (sort-by (juxt (comp str :signal)
+                                    (comp str :location) :key)) vec)
+        dynamic-keys (->> dynamic-keys distinct
+                          (sort-by (fn [item]
+                                     [(str (:signal item))
+                                      (str (:location item))
+                                      (evidence-sort-key
+                                       (first (:evidence item)))])) vec)]
+    {:schema schema-id
+     :sources (vec (sort (distinct sources)))
+     :entries entries
+     :dynamic-keys? (boolean (seq dynamic-keys))
+     :dynamic-keys dynamic-keys}))
+
+(defn analyze-form
+  "Analyze one already-read form under an explicit source namespace environment."
+  [{:keys [source aliases refers] :or {aliases {} refers {}}} form]
+  (let [source (canonical-source source)
+        found (walk-evidence source form {:aliases aliases :refers refers})]
+    (canonical-fragment [source] (:entries found) (:dynamic-keys found))))
+
+(defn analyze-source
+  "Analyze every OTel API call in one value returned by read-forms."
+  [{:keys [source forms]}]
+  (let [env (require-env forms)
+        found (reduce
+               (fn [result form]
+                 (let [item (walk-evidence source form env)]
+                   (-> result
+                       (update :entries into (:entries item))
+                       (update :dynamic-keys into (:dynamic-keys item)))))
+               (empty-found) forms)]
+    (canonical-fragment [source] (:entries found) (:dynamic-keys found))))
+
+(def ^:private scalar-types
+  #{:string :boolean :int64 :double :bytes :empty :unknown :invalid})
+
+(defn- type-descriptor? [descriptor depth]
+  (and (<= depth 16)
+       (or (contains? scalar-types descriptor)
+           (and (map? descriptor)
+                (= 1 (count descriptor))
+                (cond
+                  (contains? descriptor :array)
+                  (and (vector? (:array descriptor))
+                       (every? #(type-descriptor? % (inc depth))
+                               (:array descriptor)))
+
+                  (contains? descriptor :kvlist)
+                  (let [entries (:kvlist descriptor)]
+                    (or (contains? #{:unknown :invalid} entries)
+                        (and (map? entries)
+                             (every? string? (keys entries))
+                             (every? #(type-descriptor? % (inc depth))
+                                     (vals entries)))))
+
+                  :else false)))))
+
+(defn- evidence? [sources item]
+  (and (map? item)
+       (contains? #{#{:source :kind :authority}
+                    #{:source :line :kind :authority}}
+                  (set (keys item)))
+       (contains? sources (:source item))
+       (contains? #{:literal :constructor :cast :dynamic} (:kind item))
+       (contains? #{:literal :expression :unknown} (:authority item))
+       (= (:authority item)
+          (case (:kind item)
+            :literal :literal
+            (:constructor :cast) :expression
+            :dynamic :unknown))
+       (or (not (contains? item :line))
+           (and (integer? (:line item)) (pos? (:line item))))))
+
+(defn- bool? [value]
+  (or (true? value) (false? value)))
+
+(defn- expected-entry-flags [types]
+  (let [concrete (remove #{:unknown :invalid} types)]
+    {:unknown? (boolean (some #(descriptor-contains? % :unknown) types))
+     :invalid? (boolean (some #(descriptor-contains? % :invalid) types))
+     :conflict? (> (count concrete) 1)}))
+
+(defn- entry? [sources item]
+  (and (map? item)
+       (= #{:signal :location :key :types :unknown? :invalid? :conflict?
+            :evidence}
+          (set (keys item)))
+       (contains? #{:span :metric :log :resource} (:signal item))
+       (= :attributes (:location item))
+       (string? (:key item))
+       (not (empty? (:key item)))
+       (vector? (:types item))
+       (not (empty? (:types item)))
+       (every? #(type-descriptor? % 0) (:types item))
+       (every? bool? [(:unknown? item) (:invalid? item) (:conflict? item)])
+       (= (select-keys item [:unknown? :invalid? :conflict?])
+          (expected-entry-flags (:types item)))
+       (vector? (:evidence item))
+       (not (empty? (:evidence item)))
+       (<= (count (:evidence item)) 4096)
+       (every? #(evidence? sources %) (:evidence item))))
+
+(defn- dynamic-key? [sources item]
+  (and (map? item)
+       (= #{:signal :location :evidence} (set (keys item)))
+       (contains? #{:span :metric :log :resource} (:signal item))
+       (= :attributes (:location item))
+       (vector? (:evidence item))
+       (not (empty? (:evidence item)))
+       (<= (count (:evidence item)) 4096)
+       (every? #(evidence? sources %) (:evidence item))))
+
+(defn validate
+  "Validate the closed v1 envelope and return it."
+  [fragment]
+  (let [sources (set (:sources fragment))]
+    (when-not (and (map? fragment)
+                 (= #{:schema :sources :entries :dynamic-keys? :dynamic-keys}
+                    (set (keys fragment)))
+                 (= schema-id (:schema fragment))
+                 (vector? (:sources fragment))
+                 (<= (count (:sources fragment)) 4096)
+                 (every? #(= % (canonical-source %)) (:sources fragment))
+                 (vector? (:entries fragment))
+                 (<= (count (:entries fragment)) 65536)
+                 (every? #(entry? sources %) (:entries fragment))
+                 (vector? (:dynamic-keys fragment))
+                 (<= (count (:dynamic-keys fragment)) 65536)
+                 (every? #(dynamic-key? sources %) (:dynamic-keys fragment))
+                 (= (boolean (seq (:dynamic-keys fragment)))
+                    (:dynamic-keys? fragment))
+                 (= fragment
+                    (canonical-fragment (:sources fragment)
+                                        (:entries fragment)
+                                        (:dynamic-keys fragment))))
+      (problem! "invalid attribute schema fragment" {:fragment fragment})))
+  fragment)
+
+(defn merge-fragments
+  "Merge fragments without hiding unknown or conflicting evidence."
+  [& fragments]
+  (let [fragments (mapv validate fragments)]
+    (canonical-fragment (mapcat :sources fragments)
+                        (mapcat :entries fragments)
+                        (mapcat :dynamic-keys fragments))))
+
+(defn analyze-sources [sources]
+  (apply merge-fragments (map analyze-source sources)))
+
+(defn render
+  "Canonical EDN suitable for a generated classpath resource."
+  [fragment]
+  (str (pr-str (validate fragment)) "\n"))
