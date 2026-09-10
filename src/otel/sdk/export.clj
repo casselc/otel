@@ -145,8 +145,7 @@
         ;; rejected.
         (swap! state assoc :shutdown? true)
         (force-flush! this)
-        (when worker
-          (try (.join worker 5000) (catch :default _ nil)))
+        (lifecycle/await-worker! worker)
         (shutdown-exporter! exporter)))))
 
 (defn dropped-count

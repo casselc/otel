@@ -4,6 +4,9 @@
 
 - Test pull requests and `main` on hosted Linux with checksum-pinned Jolt 0.8.3,
   isolated reproducible caches, least-privilege permissions, and a bounded job.
+- Make batch span, periodic metric, and batch log shutdown wait for actual worker
+  termination before releasing the exporter. An interrupted worker wait is now
+  a shared terminal failure and never silently permits exporter shutdown.
 - Preserve exactly-once SDK shutdown and post-shutdown rejection while retaining
   canonical typed instrumentation-scope attributes.
 - Add deterministic, non-evaluating source inference for storage-neutral

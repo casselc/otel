@@ -98,7 +98,7 @@
       (fn []
         (swap! state assoc :shutdown? true)
         (export/force-flush! this)
-        (when worker (try (.join worker 5000) (catch :default _ nil)))
+        (lifecycle/await-worker! worker)
         (shutdown-log-exporter! exporter)))))
 
 (defn dropped-count [processor] (:dropped @(:state processor)))
