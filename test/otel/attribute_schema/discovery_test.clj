@@ -65,6 +65,11 @@
       value
       (recur (dec remaining) [value]))))
 
+(defn- discarded-edn [depth]
+  (str (apply str (repeat depth "#_ "))
+       (apply str (repeat depth "0 "))
+       "1"))
+
 (defn- utf8-length [text]
   (alength (.getBytes text "UTF-8")))
 
@@ -284,22 +289,57 @@
         (is (= (nested-value (inc limit))
                (discovery/read-index over-text)))))))
 
-(deftest fragment-nesting-fails-without-leaking-input
+(deftest recursive-reader-prefixes-are-stopped-before-core-reading
+  (let [limit discovery/max-edn-nesting-depth
+        exact-text (discarded-edn limit)
+        over-text (discarded-edn (inc limit))]
+    (testing "EDN discard prefixes have an exact shared recursion boundary"
+      (with-redefs [discovery/validate-index identity]
+        (is (= 1 (discovery/read-index exact-text)))
+        (is (= :malformed-index
+               (:reason
+                (ex-data (failure #(discovery/read-index over-text))))))))
+    (testing "the one-over witness reaches the recursive reader without the bound"
+      (with-redefs [discovery/max-edn-nesting-depth (inc limit)
+                    discovery/validate-index identity]
+        (is (= 1 (discovery/read-index over-text)))))
+    (testing "ordinary EDN set and namespaced-map dispatch remains available"
+      (with-redefs [discovery/validate-index identity]
+        (is (= #{:value} (discovery/read-index "#{:value}")))
+        (is (= {:test/value 1}
+               (discovery/read-index "#:test{:value 1}")))))
+    (testing "non-artifact recursive macros and tags are rejected and redacted"
+      (doseq [text ["'private-quote"
+                    "`private-syntax-quote"
+                    "@private-deref"
+                    "~private-unquote"
+                    "^private-metadata 0"
+                    "#private/tag 0"
+                    "#_ #private/tag 0 1"]]
+        (is (= {:otel.attribute-schema.discovery/error :invalid-discovery
+                :reason :malformed-index}
+               (ex-data (failure #(discovery/read-index text)))))
+        (is (= {:otel.attribute-schema.discovery/error :invalid-discovery
+                :reason :invalid-bundle}
+               (ex-data (failure #(discovery/read-bundle text)))))))))
+
+(deftest fragment-recursive-syntax-fails-without-leaking-input
   (let [{:keys [indexes]} (fixture-input)
         original (parsed-index (first indexes))
         path (get-in original [:fragments 0 :path])
-        secret "private-deep-fragment"
-        text (str (nested-edn (inc discovery/max-edn-nesting-depth))
-                  " ; " secret)
-        index (-> original
-                  (assoc-in [:fragments 0 :sha256]
-                            (discovery/content-sha256 text))
-                  index-text)
-        error (failure #(discover [index] {path text}))]
-    (is (= {:otel.attribute-schema.discovery/error :invalid-discovery
-            :reason :invalid-fragment}
-           (ex-data error)))
-    (is (not (str/includes? (pr-str (ex-data error)) secret)))))
+        secret "private-deep-fragment"]
+    (doseq [text [(str (nested-edn (inc discovery/max-edn-nesting-depth))
+                       " ; " secret)
+                  (str "#" secret "/tag 0")]]
+      (let [index (-> original
+                      (assoc-in [:fragments 0 :sha256]
+                                (discovery/content-sha256 text))
+                      index-text)
+            error (failure #(discover [index] {path text}))]
+        (is (= {:otel.attribute-schema.discovery/error :invalid-discovery
+                :reason :invalid-fragment}
+               (ex-data error)))
+        (is (not (str/includes? (pr-str (ex-data error)) secret)))))))
 
 (deftest aggregate-text-and-byte-budgets-cover-all-inputs
   (let [fragment (str (fixture "attribute-schema/ordinary-library.edn")

@@ -23,7 +23,7 @@
   catalog wire limit even when every codepoint needs four bytes."
   (* 8 1024 1024))
 (def max-edn-nesting-depth
-  "Maximum structural EDN delimiters open at once before recursive parsing."
+  "Maximum recursive EDN budget for open delimiters and discard prefixes."
   64)
 (def max-discovery-input-chars
   "Aggregate index plus selected-fragment characters per discovery invocation."
@@ -53,7 +53,10 @@
 
 (defn- check-edn-depth! [text]
   ;; This iterative lexical pass runs before either recursive reader. Delimiters
-  ;; inside strings, comments and character literals do not affect depth.
+  ;; inside strings, comments and character literals do not affect depth. EDN
+  ;; discard prefixes consume the same conservative budget as open delimiters:
+  ;; unlike delimiters, their charge is retained after the discarded form. This
+  ;; can reject discard-heavy siblings early but cannot undercount recursion.
   (loop [index 0 depth 0 state :normal]
     (when (< index (count text))
       (let [ch (.charAt text index)]
@@ -76,6 +79,33 @@
             ;; a named/unicode character token. Remaining token letters cannot
             ;; contain structural delimiters in valid EDN.
             (= ch \\) (recur (min (count text) (+ index 2)) depth :normal)
+            (= ch \#)
+            (let [next-index (inc index)
+                  next-ch (when (< next-index (count text))
+                            (.charAt text next-index))]
+              (cond
+                ;; Sets and namespaced maps are ordinary artifact EDN. Their
+                ;; eventual opening brace is charged by the delimiter branch.
+                (or (= next-ch \{) (= next-ch \:))
+                (recur next-index depth :normal)
+
+                ;; Discard invokes the reader recursively, so charge it before
+                ;; the core boundary reader can see it.
+                (= next-ch \_)
+                (let [next-depth (inc depth)]
+                  (when (> next-depth max-edn-nesting-depth)
+                    (throw (ex-info "EDN nesting exceeds the discovery limit" {})))
+                  (recur (inc next-index) next-depth :normal))
+
+                ;; Tagged values and all other dispatch macros are unnecessary
+                ;; for closed build artifacts and can recursively enter the
+                ;; host reader before clojure.edn rejects them.
+                :else
+                (throw (ex-info "unsupported EDN reader macro" {}))))
+            ;; These are core-reader prefixes, not artifact EDN. Reject them at
+            ;; the lexical boundary instead of letting prefix chains recurse.
+            (contains? #{\' \` \~ \@ \^} ch)
+            (throw (ex-info "unsupported EDN reader macro" {}))
             (contains? #{\( \[ \{} ch)
             (let [next-depth (inc depth)]
               (when (> next-depth max-edn-nesting-depth)

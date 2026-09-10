@@ -63,9 +63,14 @@ render is accepted by `read-bundle` at that boundary.
 
 All index, fragment and serialized-bundle EDN is checked by an iterative lexical
 pass before either recursive reader runs. Structural delimiters inside strings,
-comments and character literals are ignored; actual EDN nesting may be at most
-64 levels. Exact-one-value parsing and the no-evaluation/data-reader rules still
-apply after that preflight.
+comments and character literals are ignored. Open delimiters and EDN discard
+prefixes share a conservative budget of 64; discard charges are retained, so a
+document with many non-nested discards may be rejected early rather than risk an
+undercount. Sets and namespaced maps remain accepted. Core-only quote, syntax
+quote, dereference, unquote and metadata prefixes, tagged values, and other
+dispatch macros are not part of the closed artifact format and are rejected by
+the preflight. Exact-one-value parsing and the no-evaluation/data-reader rules
+still apply afterward.
 
 One `discover` invocation also has aggregate budgets across every supplied index
 text and every selected fragment text it loads:
