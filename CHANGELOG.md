@@ -14,8 +14,9 @@
   canonical typed instrumentation-scope attributes.
 - Add deterministic, non-evaluating source inference for storage-neutral
   attribute schema hints, including instrumentation-scope attributes at tracer,
-  meter, and logger acquisition. Dynamic and conflicting evidence remains
-  explicit.
+  meter, and logger acquisition. Calls respect namespace aliases, referred vars,
+  lexical shadowing, destructuring, and source-order definitions. Dynamic and
+  conflicting evidence remains explicit.
 - Add one bounded, immutable OpenTelemetry AnyValue representation shared by
   attribute normalization and OTLP encoding/decoding. It preserves signed
   64-bit integers, explicit present-empty values, byte strings, mixed arrays

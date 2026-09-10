@@ -151,6 +151,57 @@
            (evidence-locations fragment)))
     (is (:dynamic-keys? fragment))))
 
+(deftest lexical-bindings-shadow-referred-api-vars
+  (let [source
+        "(ns app.shadowed
+           (:require [otel.sdk.logs :refer [get-logger]]
+                     [otel.sdk.metrics :as sdk-metrics :refer [get-meter]]
+                     [otel.sdk.tracer :refer [get-tracer]]
+                     [otel.trace :refer [set-attribute! with-span]]))
+         (let [get-tracer
+               (get-tracer tp {:attributes {:refer.visible-in-init true}})]
+           (get-tracer tp {:attributes {:shadow.let true}}))
+         ((fn [{:keys [get-meter]}]
+            (get-meter mp {:attributes {:shadow.fn true}})) values)
+         (loop [[get-logger] loggers]
+           (get-logger lp {:attributes {:shadow.loop true}}))
+         (letfn [(get-tracer [provider options] local-tracer)]
+           (get-tracer tp {:attributes {:shadow.letfn true}}))
+         (defn local-wrapper [{:keys [get-tracer]}]
+           (get-tracer tp {:attributes {:shadow.defn true}}))
+         (let [set-attribute! local-set]
+           (set-attribute! span :shadow.existing-api true))
+         (if-let [get-meter maybe-meter]
+           (get-meter mp {:attributes {:shadow.if-then true}})
+           (get-meter mp {:attributes {:refer.visible-in-else true}}))
+         (doseq [{:keys [get-logger]} loggers]
+           (get-logger lp {:attributes {:shadow.doseq true}}))
+         (with-span [get-meter tracer \"scope\"
+                     {:attributes {:span.binding-boundary true}}]
+           (get-meter mp {:attributes {:shadow.with-span true}}))
+         (let [sdk-metrics local-value]
+           (sdk-metrics/get-meter mp
+             {:attributes {:alias.still-qualified true}}))"
+        fragment (schema/analyze-source
+                  (schema/read-forms "src/app/shadowed.clj" source))]
+    (is (= #{[:metric :scope-attributes "alias.still-qualified"]
+             [:metric :scope-attributes "refer.visible-in-else"]
+             [:span :scope-attributes "refer.visible-in-init"]
+             [:span :attributes "span.binding-boundary"]}
+           (evidence-locations fragment)))))
+
+(deftest top-level-definitions-shadow-referred-api-vars-after-definition
+  (let [source
+        "(ns app.top-level-shadow
+           (:require [otel.sdk.tracer :refer [get-tracer]]))
+         (get-tracer tp {:attributes {:before.definition true}})
+         (def get-tracer local-tracer)
+         (get-tracer tp {:attributes {:after.definition false}})"
+        fragment (schema/analyze-source
+                  (schema/read-forms "src/app/top_level_shadow.clj" source))]
+    (is (= #{[:span :scope-attributes "before.definition"]}
+           (evidence-locations fragment)))))
+
 (defn- runtime-scalar-type [value]
   (cond
     (string? value) :string

@@ -105,7 +105,13 @@ ClickHouse type, or apply a database migration. Source paths in the artifact are
 project-relative, and there are no timestamps or checkout paths, so running the
 same analysis twice produces byte-identical EDN. The initial analyzer is
 deliberately shallow: helper-built or otherwise dynamic maps need an explicit
-future declaration or remain unknown. Bare auto-resolved keyword keys (`::key`)
+future declaration or remain unknown. Calls resolve through namespace aliases,
+referred vars, source-order top-level definitions, and lexical bindings in the
+standard `let`/`loop`, conditional binding, `fn`/`defn`, `letfn`, and
+comprehension forms. Destructured locals shadow referred vars; a qualified alias
+remains a namespace reference, matching Clojure call resolution. The analyzer
+does not expand arbitrary user macros, so it does not claim evidence for calls
+that exist only after macro expansion. Bare auto-resolved keyword keys (`::key`)
 are reported as dynamic. Alias-qualified auto-resolved keys (`::alias/key`) are
 unsupported and fail closed with a sanitized diagnostic: resolving them
 correctly requires the compiler's namespace environment, which this source-only
