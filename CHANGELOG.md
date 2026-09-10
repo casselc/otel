@@ -8,6 +8,14 @@
   aggregate character, UTF-8 byte, decoded-entry and evidence budgets across all
   indexes and selected fragments. Over-budget discovery stops before later
   resource reads or schema merging with redacted diagnostics.
+- Add a literate Quint model and shared runtime trace vocabulary for batch-span,
+  periodic-metric, and batch-log worker ownership. Corrected traces require
+  worker termination before the exactly-once exporter-close call, retain
+  ownership after an interrupted wait, share close failures across callers,
+  reject post-shutdown owner work (enqueue for spans/logs and
+  collection/export for metrics), exercise real signal workers, and kill timed-join,
+  swallowed-wait, late-export, and double-close mutants in a path-sensitive CI
+  gate.
 - Add explicit `otel.attribute-schema.index/v1` discovery with canonical
   package, repository, immutable revision/version, resource path and SHA-256
   identity. Deterministic artifact ordering, include/exclude selection,
