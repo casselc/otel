@@ -52,7 +52,8 @@
          (schema/read-forms
           "src/app/telemetry.clj"
           "(ns app.telemetry
-             (:require [otel.logs :as logs] [otel.resource :as res]))
+             (:require [otel.logs :as logs] [otel.resource :as res]
+                       [otel.trace :as trace]))
            (res/resource {:service.name \"checkout\"
                           :telemetry.sdk.name \"opentelemetry\"
                           :telemetry.sdk.language \"jolt\"
@@ -63,6 +64,8 @@
                           :process.runtime.description description
                           :host.arch \"arm64\"
                           :os.type \"darwin\"})
+           (trace/set-attribute! span :exception.type \"Error\")
+           (trace/set-attribute! span :exception.message (str message))
            (logs/emit! logger {:attributes {:exception.type \"Error\"
                                             :exception.message (str message)
                                             :exception.data data}})"))]
@@ -72,8 +75,11 @@
   (doseq [[form expected actual]
           [['(res/resource {:service.name 42}) :string :int64]
            ['(res/resource {:process.pid (double pid)}) :int64 :double]
+           ['(res/resource {:process.pid nil}) :int64 :invalid]
            ['(logs/emit! logger {:attributes {:exception.type false}})
-            :string :boolean]]]
+            :string :boolean]
+           ['(trace/set-attribute! span :exception.message 42)
+            :string :int64]]]
     (let [fragment (analyze "src/app/private.clj" form)
           error (try (semconv/check fragment) nil
                      (catch Exception error error))]

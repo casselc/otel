@@ -149,10 +149,12 @@ each upstream registry source file used to transcribe its entries.
 The checker requires exact type equality at a registered signal/location.
 In particular, an `:int64` convention is never widened to `:double`. A known
 literal, constructor, or cast with a conflicting type fails with deterministic,
-sanitized exception data. Dynamic values, unregistered keys (including this
-library's `exception.data` extension), and uses outside a registered location
-remain on the existing fallback path. Conflicts between literals for an
-unregistered key remain visible in the original fragment exactly as before.
+sanitized exception data. Statically invalid literal evidence also fails rather
+than being mistaken for the pinned type. Dynamic values, unregistered keys
+(including this library's `exception.data` extension), and uses outside a
+registered location remain on the existing fallback path. Conflicts between
+literals for an unregistered key remain visible in the original fragment
+exactly as before.
 
 The registry contains metadata only: it does not inspect observed attribute
 values, environment variables, host details, or absolute paths, and checking
