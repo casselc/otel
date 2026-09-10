@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preserve exactly-once SDK shutdown and post-shutdown rejection while retaining
+  canonical typed instrumentation-scope attributes.
 - Add deterministic, non-evaluating source inference for storage-neutral
   attribute schema hints. Dynamic and conflicting evidence remains explicit.
 - Add one bounded, immutable OpenTelemetry AnyValue representation shared by
