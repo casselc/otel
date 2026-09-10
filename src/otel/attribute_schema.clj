@@ -22,7 +22,10 @@
    'otel.metrics/set-value! :metric
    'otel.metrics/observe! :metric
    'otel.logs/emit! :log
-   'otel.resource/resource :resource})
+   'otel.resource/resource :resource
+   'otel.sdk.tracer/get-tracer :tracer-scope
+   'otel.sdk.metrics/get-meter :meter-scope
+   'otel.sdk.logs/get-logger :logger-scope})
 
 (def ^:private cast-types
   {'long :int64 'clojure.core/long :int64
@@ -204,26 +207,33 @@
                         :unknown)}
     (:line (meta form)) (assoc :line (:line (meta form)))))
 
-(defn- entry [source signal key value-form env form]
-  (let [{:keys [type kind]} (infer-value-form* env value-form false)]
-    {:signal signal :location :attributes :key key :types [type]
-     :unknown? (boolean (descriptor-contains? type :unknown))
-     :invalid? (boolean (descriptor-contains? type :invalid))
-     :evidence [(evidence source form kind)]}))
+(defn- entry
+  ([source signal key value-form env form]
+   (entry source signal :attributes key value-form env form))
+  ([source signal location key value-form env form]
+   (let [{:keys [type kind]} (infer-value-form* env value-form false)]
+     {:signal signal :location location :key key :types [type]
+      :unknown? (boolean (descriptor-contains? type :unknown))
+      :invalid? (boolean (descriptor-contains? type :invalid))
+      :evidence [(evidence source form kind)]})))
 
-(defn- inferred-attributes [source signal form env call-form]
-  (if-not (map? form)
-    {:entries []
-     :dynamic-keys [{:signal signal :location :attributes
-                     :evidence [(evidence source call-form :dynamic)]}]}
-    (reduce
-     (fn [result [key value]]
-       (if-let [key (literal-key key false)]
-         (update result :entries conj (entry source signal key value env call-form))
-         (update result :dynamic-keys conj
-                 {:signal signal :location :attributes
-                  :evidence [(evidence source call-form :dynamic)]})))
-     {:entries [] :dynamic-keys []} form)))
+(defn- inferred-attributes
+  ([source signal form env call-form]
+   (inferred-attributes source signal :attributes form env call-form))
+  ([source signal location form env call-form]
+   (if-not (map? form)
+     {:entries []
+      :dynamic-keys [{:signal signal :location location
+                      :evidence [(evidence source call-form :dynamic)]}]}
+     (reduce
+      (fn [result [key value]]
+        (if-let [key (literal-key key false)]
+          (update result :entries conj
+                  (entry source signal location key value env call-form))
+          (update result :dynamic-keys conj
+                  {:signal signal :location location
+                   :evidence [(evidence source call-form :dynamic)]})))
+      {:entries [] :dynamic-keys []} form))))
 
 (defn- opts-attributes [source signal form env call-form]
   (if (and (map? form) (contains? form :attributes))
@@ -231,6 +241,22 @@
     {:entries [] :dynamic-keys []}))
 
 (defn- empty-found [] {:entries [] :dynamic-keys []})
+
+(defn- scope-options-attributes [source signal form env call-form]
+  (let [unknown {:signal signal :location :scope-attributes
+                 :evidence [(evidence source call-form :dynamic)]}]
+    (if-not (map? form)
+      {:entries [] :dynamic-keys [unknown]}
+      (let [found (if (contains? form :attributes)
+                    (inferred-attributes source signal :scope-attributes
+                                         (:attributes form) env call-form)
+                    (empty-found))]
+        ;; A computed option key can evaluate to :attributes, including beside
+        ;; a literal key. Retain any known evidence, but do not claim it is the
+        ;; complete scope schema when the analyzer cannot know that.
+        (if (some #(nil? (literal-key % false)) (keys form))
+          (update found :dynamic-keys conj unknown)
+          found)))))
 
 (defn- call-evidence [source form env]
   (case (get call-kinds (resolve-symbol env (first form)))
@@ -274,6 +300,21 @@
     :resource
     (if (>= (count form) 2)
       (inferred-attributes source :resource (nth form 1) env form)
+      (empty-found))
+
+    :tracer-scope
+    (if (= 3 (count form))
+      (scope-options-attributes source :span (nth form 2) env form)
+      (empty-found))
+
+    :meter-scope
+    (if (= 3 (count form))
+      (scope-options-attributes source :metric (nth form 2) env form)
+      (empty-found))
+
+    :logger-scope
+    (if (= 3 (count form))
+      (scope-options-attributes source :log (nth form 2) env form)
       (empty-found))
 
     (empty-found)))
@@ -403,7 +444,9 @@
             :evidence}
           (set (keys item)))
        (contains? #{:span :metric :log :resource} (:signal item))
-       (= :attributes (:location item))
+       (or (= :attributes (:location item))
+           (and (= :scope-attributes (:location item))
+                (contains? #{:span :metric :log} (:signal item))))
        (string? (:key item))
        (not (empty? (:key item)))
        (vector? (:types item))
@@ -421,7 +464,9 @@
   (and (map? item)
        (= #{:signal :location :evidence} (set (keys item)))
        (contains? #{:span :metric :log :resource} (:signal item))
-       (= :attributes (:location item))
+       (or (= :attributes (:location item))
+           (and (= :scope-attributes (:location item))
+                (contains? #{:span :metric :log} (:signal item))))
        (vector? (:evidence item))
        (not (empty? (:evidence item)))
        (<= (count (:evidence item)) 4096)

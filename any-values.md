@@ -88,8 +88,12 @@ infer a schema by observing values.
 `otel.attribute-schema` can inspect explicitly listed Clojure source files and
 return a deterministic, storage-neutral EDN fragment. It recognizes exact OTel
 API calls, literal attribute maps and keys, the canonical byte and empty-value
-constructors, and ordinary scalar casts. Dynamic forms remain visibly unknown;
-conflicting evidence is retained rather than widened or guessed.
+constructors, and ordinary scalar casts. It also distinguishes attributes on
+spans, metrics, logs, and resources from instrumentation-scope attributes passed
+to `get-tracer`, `get-meter`, and `get-logger`. Dynamic forms remain visibly
+unknown; conflicting evidence is retained rather than widened or guessed.
+Dynamic acquisition option maps are likewise recorded as unknown scope evidence,
+including computed option keys that could resolve to `:attributes` at runtime.
 
 ```sh
 jolt -M -m otel.attribute-schema.main --root . src/my/app.clj \

@@ -2,7 +2,10 @@
   (:require [clojure.test :refer [deftest is testing]]
             [otel.any-value :as any]
             [otel.attribute-schema :as schema]
-            [otel.attribute-schema.main :as main]))
+            [otel.attribute-schema.main :as main]
+            [otel.sdk.logs :as sdk-logs]
+            [otel.sdk.metrics :as sdk-metrics]
+            [otel.sdk.tracer :as sdk-tracer]))
 
 (def aliases {'trace 'otel.trace 'metrics 'otel.metrics 'logs 'otel.logs
               'res 'otel.resource 'any 'otel.any-value})
@@ -10,6 +13,11 @@
 (defn- entry-for [fragment signal key]
   (first (filter #(and (= signal (:signal %)) (= key (:key %)))
                  (:entries fragment))))
+
+(defn- evidence-locations [fragment]
+  (set (concat (map (juxt :signal :location :key) (:entries fragment))
+               (map (juxt :signal :location (constantly :dynamic))
+                    (:dynamic-keys fragment)))))
 
 (deftest value-forms-use-the-canonical-any-value-algebra
   (is (= :string (:type (schema/infer-value-form "x"))))
@@ -94,6 +102,104 @@
              [:metric "observer"] [:log "log"]
              [:resource "service.name"]}
            (set (map (juxt :signal :key) (:entries fragment)))))))
+
+(deftest scope-acquisition-resolves-exact-calls-arities-and-aliases
+  (let [source
+        "(ns app.scopes
+           (:require [otel.sdk.logs :as sdk-logs]
+                     [otel.sdk.metrics :refer [get-meter]]
+                     [otel.sdk.tracer :as sdk-tracer]))
+         (sdk-tracer/get-tracer tracer-provider
+           {:name \"trace-lib\" :attributes {:scope.trace true}})
+         (get-meter meter-provider
+           {:name \"metric-lib\" :attributes {:scope.metric 7}})
+         (sdk-logs/get-logger logger-provider
+           {:name \"log-lib\" :attributes {:scope.log \"on\"}})
+         (other/get-tracer tracer-provider
+           {:attributes {:false.positive :other-namespace}})
+         (sdk-tracer/get-tracer tracer-provider
+           {:attributes {:false.arity :extra}} ignored)"
+        fragment (schema/analyze-source
+                  (schema/read-forms "src/app/scopes.clj" source))]
+    (is (= #{[:span :scope-attributes "scope.trace"]
+             [:metric :scope-attributes "scope.metric"]
+             [:log :scope-attributes "scope.log"]}
+           (evidence-locations fragment)))
+    (is (= [:boolean] (:types (entry-for fragment :span "scope.trace"))))
+    (is (= [:int64] (:types (entry-for fragment :metric "scope.metric"))))
+    (is (= [:string] (:types (entry-for fragment :log "scope.log"))))
+    (is (= fragment (schema/validate fragment)))))
+
+(deftest dynamic-scope-options-remain-explicit-unknown-evidence
+  (let [source
+        "(ns app.dynamic-scopes
+           (:require [otel.sdk.logs :refer [get-logger]]
+                     [otel.sdk.metrics :as metrics]
+                     [otel.sdk.tracer :as tracer]))
+         (tracer/get-tracer tracer-provider dynamic-options)
+         (metrics/get-meter meter-provider {:name \"m\" :attributes attrs})
+         (get-logger logger-provider {option-key attrs})
+         (get-logger logger-provider
+           {:attributes {:known true} option-key attrs})"
+        fragment (schema/analyze-source
+                  (schema/read-forms "src/app/dynamic_scopes.clj" source))]
+    (is (= [:boolean] (:types (entry-for fragment :log "known"))))
+    (is (= #{[:span :scope-attributes :dynamic]
+             [:metric :scope-attributes :dynamic]
+             [:log :scope-attributes :dynamic]
+             [:log :scope-attributes "known"]}
+           (evidence-locations fragment)))
+    (is (:dynamic-keys? fragment))))
+
+(defn- runtime-scalar-type [value]
+  (cond
+    (string? value) :string
+    (integer? value) :int64
+    (or (true? value) (false? value)) :boolean))
+
+(deftest inferred-scope-schema-agrees-with-runtime-normalization
+  (let [attributes {:scope.string "literal" :scope.int 7 :scope.boolean true}
+        source
+        "(ns app.runtime-agreement
+           (:require [otel.sdk.logs :as logs]
+                     [otel.sdk.metrics :as metrics]
+                     [otel.sdk.tracer :as tracer]))
+         (tracer/get-tracer tp {:name \"trace\"
+                                :attributes {:scope.string \"literal\"
+                                             :scope.int 7
+                                             :scope.boolean true}})
+         (metrics/get-meter mp {:name \"metric\"
+                                :attributes {:scope.string \"literal\"
+                                             :scope.int 7
+                                             :scope.boolean true}})
+         (logs/get-logger lp {:name \"log\"
+                              :attributes {:scope.string \"literal\"
+                                           :scope.int 7
+                                           :scope.boolean true}})"
+        fragment (schema/analyze-source
+                  (schema/read-forms "src/app/runtime_agreement.clj" source))
+        scopes [(:scope (sdk-tracer/get-tracer
+                         (sdk-tracer/tracer-provider {})
+                         {:name "trace" :attributes attributes}))
+                (:scope (sdk-metrics/get-meter
+                         (sdk-metrics/meter-provider {})
+                         {:name "metric" :attributes attributes}))
+                (:scope (sdk-logs/get-logger
+                         (sdk-logs/logger-provider {})
+                         {:name "log" :attributes attributes}))]
+        runtime-manifest
+        (into {}
+              (mapcat (fn [[signal scope]]
+                        (map (fn [[key value]]
+                               [[signal :scope-attributes key]
+                                (runtime-scalar-type value)])
+                             (:attributes scope)))
+                      (map vector [:span :metric :log] scopes)))
+        inferred-manifest
+        (into {} (map (fn [{:keys [signal location key types]}]
+                        [[signal location key] (first types)])
+                      (:entries fragment)))]
+    (is (= runtime-manifest inferred-manifest))))
 
 (deftest aliases-and-referred-api-vars-resolve-without-evaluation
   (let [source "(ns app.core (:require [otel.trace :refer [set-attribute!]]))
@@ -199,3 +305,14 @@
     (is (thrown? Exception
                  (schema/validate
                   (assoc-in valid [:entries 0 :types] [:made-up]))))))
+
+(deftest validator-keeps-scope-attributes-on-instrumentation-signals
+  (let [valid (schema/analyze-form
+               {:source "src/a.clj"
+                :aliases {'tracer 'otel.sdk.tracer}}
+               '(tracer/get-tracer provider
+                  {:attributes {:scope.attribute true}}))]
+    (is (= valid (schema/validate valid)))
+    (is (thrown? Exception
+                 (schema/validate
+                  (assoc-in valid [:entries 0 :signal] :resource))))))
