@@ -328,7 +328,7 @@
     (case (count resources)
       0 (problem! missing-reason)
       1 (try
-          (slurp (first resources))
+          (slurp (first resources) :encoding "UTF-8")
           (catch Exception _error
             (problem! unreadable-reason)))
       (problem! :duplicate-classpath-resource))))
