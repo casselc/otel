@@ -47,13 +47,24 @@ injected resource reader; this is the shared merge implementation.
 Every index and fragment is structurally validated before merging. Missing or
 unreadable resources, digest drift, duplicate locators, different digests for
 one locator, conflicting repository claims, and resource-path collisions fail
-closed. Valid identities are sorted before fragments are merged, so shuffled
-index or classpath traversal order renders byte-identical bundle EDN. Each
-bundle retains artifact identity beside that fragment's project-relative source
-list, even when two artifacts both contain `src/shared.clj`. The merged
+closed. An index or fragment resource must contain exactly one EDN value; a
+valid first value followed by another form or junk is rejected. Valid identities
+and every map in the output are canonicalized before rendering, so shuffled
+index order or input map insertion order renders byte-identical bundle EDN.
+Each bundle retains artifact identity beside that fragment's project-relative
+source list, even when two artifacts both contain `src/shared.clj`. The merged
 `otel.attribute-schema/v1` view is checked against the pinned
-`otel.semantic-conventions` registry. Unknown and dynamic evidence remains
-visible on the fallback path.
+`otel.semantic-conventions` registry both during discovery and again at the
+public rendering boundary. Unknown and dynamic evidence remains visible on the
+fallback path.
+
+`discover-resources` enumerates all matches for each explicitly named index and
+fragment through the active Clojure/Jolt class loader and requires exactly one.
+A shadowed or duplicate resource therefore fails closed instead of silently
+using the first classpath match. This checks resource uniqueness and content;
+portable classpath APIs do not attest that an index and fragment came from the
+same physical JAR or checkout. The artifact identity remains a validated
+publisher claim selected by the consuming build, not container-signing proof.
 
 Diagnostics contain only bounded error classifications (or the pinned
 semantic-convention mismatch fields). They do not copy index text, fragment
@@ -74,4 +85,3 @@ telemetry into CI logs.
 - Runtime attribute validation continues to enforce the AnyValue contract.
   Discovery never observes runtime values and runtime observations never alter
   the build artifact.
-

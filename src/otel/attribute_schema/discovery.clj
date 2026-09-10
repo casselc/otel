@@ -5,11 +5,11 @@
   an injected resource reader so build tools do not need to execute dependency
   code or depend on classpath traversal order."
   (:require [clojure.edn :as edn]
-            [clojure.java.io :as io]
             [clojure.string :as str]
             [otel.attribute-schema :as attribute-schema]
             [otel.semantic-conventions :as semconv])
-  (:import [java.security MessageDigest]))
+  (:import [java.io PushbackReader StringReader]
+           [java.security MessageDigest]))
 
 (def index-schema-id "otel.attribute-schema.index/v1")
 (def bundle-schema-id "otel.attribute-schema.bundle/v1")
@@ -18,6 +18,7 @@
 (def ^:private max-fragment-chars (* 16 1024 1024))
 (def ^:private max-indexes 256)
 (def ^:private max-fragments 4096)
+(def ^:private allowed-option-keys #{:include :exclude})
 
 (defn- problem! [reason]
   ;; Resource contents, paths, URLs, selectors, host paths and resolver errors
@@ -28,6 +29,40 @@
 
 (defn- sha256? [value]
   (boolean (and (string? value) (re-matches #"[0-9a-f]{64}" value))))
+
+(defn- read-exact-edn [text]
+  ;; Jolt's edn/read drains a Reader before parsing, so use the safe core reader
+  ;; only to prove the one-form boundary, then let clojure.edn define the value
+  ;; language. No tagged data reader or read-eval hook is allowed to run.
+  (let [eof (Object.)]
+    (with-open [reader (PushbackReader. (StringReader. text))]
+      (binding [*read-eval* false
+                *data-readers* {}
+                *default-data-reader-fn* nil]
+        (let [first-form (read {:eof eof} reader)
+              trailing (read {:eof eof} reader)]
+          (when (or (identical? first-form eof)
+                    (not (identical? trailing eof)))
+            (throw (ex-info "expected exactly one EDN value" {})))
+          (edn/read-string text))))))
+
+(defn- canonical-compare [left right]
+  (compare (pr-str left) (pr-str right)))
+
+(defn- canonical-edn [value]
+  (cond
+    (map? value)
+    (into (sorted-map-by canonical-compare)
+          (map (fn [[key item]] [key (canonical-edn item)]) value))
+
+    (vector? value) (mapv canonical-edn value)
+    :else value))
+
+(defn- validate-options [options]
+  (when-not (and (map? options)
+                 (every? allowed-option-keys (keys options)))
+    (problem! :invalid-options))
+  options)
 
 (defn- revision? [value]
   (boolean (and (string? value) (re-matches #"[0-9a-f]{40}" value))))
@@ -103,7 +138,7 @@
   (when-not (and (string? text) (<= (count text) max-index-chars))
     (problem! :malformed-index))
   (try
-    (validate-index (edn/read-string text))
+    (validate-index (read-exact-edn text))
     (catch Exception error
       (if (:otel.attribute-schema.discovery/error (ex-data error))
         (throw error)
@@ -121,9 +156,11 @@
 (defn content-sha256
   "Return the lowercase SHA-256 digest of the exact UTF-8 resource text."
   [text]
+  (when-not (string? text)
+    (problem! :invalid-fragment))
   (bytes->hex
    (.digest (MessageDigest/getInstance "SHA-256")
-            (.getBytes (str text) "UTF-8"))))
+            (.getBytes text "UTF-8"))))
 
 (defn- release-key [artifact]
   (if (contains? artifact :revision)
@@ -192,7 +229,7 @@
       (problem! :digest-mismatch))
     (let [fragment
           (try
-            (attribute-schema/validate (edn/read-string text))
+            (attribute-schema/validate (read-exact-edn text))
             (catch Exception _error
               (problem! :invalid-fragment)))]
       (assoc item :sources (:sources fragment) :fragment fragment))))
@@ -206,13 +243,14 @@
   fully satisfied.  Returns a deterministic pure build value."
   ([index-texts read-resource]
    (discover index-texts read-resource {}))
-  ([index-texts read-resource {:keys [include exclude]}]
+  ([index-texts read-resource options]
+   (validate-options options)
    (when-not (and (coll? index-texts) (<= (count index-texts) max-indexes))
      (problem! :malformed-index))
    (when-not (fn? read-resource)
      (problem! :invalid-resource-reader))
-   (let [include (selectors include)
-         exclude (selectors exclude)
+   (let [include (selectors (:include options))
+         exclude (selectors (:exclude options))
          indexes (mapv read-index index-texts)
          available (set (map #(get-in % [:artifact :package]) indexes))]
      (when-not (every? available include)
@@ -234,9 +272,10 @@
              checked (mapv #(update % :fragment semconv/check) loaded)
              merged (apply attribute-schema/merge-fragments
                            (map :fragment checked))]
-         {:schema bundle-schema-id
-          :fragments (mapv #(select-keys % [:identity :sources]) checked)
-          :attribute-schema merged})))))
+         (canonical-edn
+          {:schema bundle-schema-id
+           :fragments (mapv #(select-keys % [:identity :sources]) checked)
+           :attribute-schema merged}))))))
 
 (defn render
   "Render a discovered bundle as byte-deterministic canonical EDN."
@@ -263,11 +302,36 @@
           (= fragments (vec (sort-by identity-sort-key fragments))))
       (problem! :invalid-bundle))
     (check-global-claims! fragments)
-    (try
-      (attribute-schema/validate (:attribute-schema bundle))
-      (catch Exception _error
-        (problem! :invalid-bundle)))
-    (str (pr-str bundle) "\n")))
+    (let [fragment
+          (try
+            (attribute-schema/validate (:attribute-schema bundle))
+            (catch Exception _error
+              (problem! :invalid-bundle)))]
+      ;; Rendering is a public boundary too: do not let a caller bypass the
+      ;; pinned convention check with a structurally valid replacement.
+      (semconv/check fragment)
+      (str (pr-str (canonical-edn
+                    {:schema bundle-schema-id
+                     :fragments fragments
+                     :attribute-schema fragment}))
+           "\n"))))
+
+(defn- resource-urls [path]
+  (try
+    (vec (enumeration-seq
+          (.getResources (clojure.lang.RT/baseLoader) path)))
+    (catch Exception _error
+      (problem! :unreadable-classpath))))
+
+(defn- read-unique-classpath-resource [path missing-reason unreadable-reason]
+  (let [resources (resource-urls path)]
+    (case (count resources)
+      0 (problem! missing-reason)
+      1 (try
+          (slurp (first resources))
+          (catch Exception _error
+            (problem! unreadable-reason)))
+      (problem! :duplicate-classpath-resource))))
 
 (defn discover-resources
   "Discover from explicitly named classpath index resources.
@@ -277,6 +341,7 @@
   ([index-resources]
    (discover-resources index-resources {}))
   ([index-resources options]
+   (validate-options options)
    (when-not (and (coll? index-resources)
                   (<= (count index-resources) max-indexes)
                   (= (count index-resources) (count (distinct index-resources))))
@@ -288,10 +353,11 @@
                            (problem! :malformed-index))))
                      index-resources)
          read-classpath (fn [path]
-                          (when-let [resource (io/resource path)]
-                            (slurp resource)))
+                          (read-unique-classpath-resource
+                           path :missing-resource :unreadable-resource))
          index-texts (mapv (fn [path]
-                             (or (read-classpath path)
-                                 (problem! :missing-index-resource)))
+                             (read-unique-classpath-resource
+                              path :missing-index-resource
+                              :unreadable-index-resource))
                            paths)]
      (discover index-texts read-classpath options))))
