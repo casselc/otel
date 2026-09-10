@@ -73,13 +73,20 @@ A `:git/sha` must be the full 40-character sha, or a prefix alongside a
 (sdk/shutdown! otel)
 ```
 
-Shutdown rejects new telemetry, drains accepted work, waits for each background
-worker to terminate, and only then shuts down its exporter. It has no separate
+Shutdown rejects new processor/reader work, drains accepted work, waits for each
+background worker to terminate, and only then shuts down its exporter. For
+spans and logs that means no new enqueue; an existing metric instrument may
+still record locally, but its shut-down reader rejects later collection/export.
+Shutdown has no separate
 worker-wait timeout: exporter-specific timeouts or cancellation own any bound
 on exporter work, while treating an arbitrary join timeout as quiescence could
 close an exporter still in use. If the waiting thread is interrupted, every
 concurrent or later shutdown caller observes the same failure and the exporter
 remains open.
+
+The executable [shutdown ownership model](formal/quint/shutdown-lifecycle.md)
+documents the shared worker/exporter state machine, its abstraction boundary,
+and the causal mutation controls used to keep this ordering check meaningful.
 
 Attribute values keep their OpenTelemetry types, including nested maps and
 arrays, byte strings and an explicit present-empty value. Invalid values are
