@@ -80,6 +80,12 @@ every value arm above and the absent-key distinction. Default-zero dropped
 counts on resources, scopes, events, and links stay absent in both records;
 positive counts remain explicit and survive the wire path.
 
+Equivalent focused fixtures cover SDK-ended logs with representable scalar
+bodies and SDK gauge, sum, and explicit-histogram collections. Their attribute
+maps use this complete value algebra. The record-level qualification in
+`receiver.md` documents fields outside exact log or metric equality; those
+limitations do not cause attribute values to be stringified or inferred.
+
 This representation follows the OpenTelemetry common attribute model and the
 OTLP JSON protobuf mapping. Safety bounds are an SDK policy layered on that wire
 model. The representative trace fixture is pinned to opentelemetry-proto commit

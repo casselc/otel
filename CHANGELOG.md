@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Align decoded log and metric shapes with their canonical SDK exporter inputs:
+  absent log correlation fields, gauge start time, and default-zero resource,
+  scope, or log dropped counts stay absent, while positive counts survive.
+  Focused fixtures cover representable log bodies, all AnyValue attribute arms,
+  and gauge, sum, and explicit-histogram collections.
 - Make decoded trace records match the canonical SDK-ended span shape while
   preserving typed AnyValue distinctions. Span and link contexts use the shared
   immutable context value, default-zero nested dropped counts stay absent, and a

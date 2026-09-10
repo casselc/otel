@@ -30,6 +30,7 @@
     otel.exporter.otlp-test
     otel.otlp.encode-test
     otel.otlp.http-receiver-test
+    otel.otlp.signal-decode-test
     otel.otlp.trace-decode-test
     otel.propagation-test
     otel.resource-test
