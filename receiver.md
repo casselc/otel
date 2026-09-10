@@ -34,6 +34,20 @@ transport-neutral boundaries for the canonical log and metric models. The Ring
 handler routes their accepted records or collections through the corresponding
 SDK exporter protocols and reports signal-specific rejected counts.
 
+Within the current canonical domain, SDK log records and gauge, sum, and
+explicit-histogram collections compare equal before encoding and after decoding.
+Absent correlation fields and gauge start times remain absent, and default-zero
+dropped counts remain absent from resources, scopes, and logs. Positive wire
+dropped counts remain explicit.
+
+This is not a universal round-trip claim. A nil log body becomes an empty string,
+and structured or otherwise unsupported log bodies use the documented readable
+string fallback. Metric values outside signed int64, non-finite values, and
+integer histogram boundaries are outside exact record equality: OTLP constrains
+integer points and represents bounds as doubles. Exemplars, non-zero point flags,
+and point dropped-attribute counts are not modeled by this SDK and remain
+explicit receiver rejections rather than invented defaults.
+
 Neither namespace is an HTTP server or JSON parser. The complete receiver
 stack owns, in this order:
 

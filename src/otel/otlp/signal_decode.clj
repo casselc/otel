@@ -79,18 +79,21 @@
   (let [v (field m k)]
     (if (present? v) (uint32! signal v (conj path (name k))) 0)))
 (defn- resource! [signal v schema-url path]
-  (let [m (if (present? v) (object! signal v path) {})]
-    (assoc (resource/resource (attributes! signal (field m :attributes)
-                                           (conj path "attributes"))
-                              {:schema-url schema-url})
-           :dropped-attributes-count (count-field! signal m :droppedAttributesCount path))))
+  (let [m (if (present? v) (object! signal v path) {})
+        dropped (count-field! signal m :droppedAttributesCount path)]
+    (cond-> (resource/resource (attributes! signal (field m :attributes)
+                                            (conj path "attributes"))
+                               {:schema-url schema-url})
+      (pos? dropped) (assoc :dropped-attributes-count dropped))))
 (defn- scope! [signal v schema-url path]
-  (let [m (if (present? v) (object! signal v path) {})]
-    {:name (optional-string! signal m :name path "")
-     :version (optional-string! signal m :version path nil)
-     :schema-url schema-url
-     :attributes (attributes! signal (field m :attributes) (conj path "attributes"))
-     :dropped-attributes-count (count-field! signal m :droppedAttributesCount path)}))
+  (let [m (if (present? v) (object! signal v path) {})
+        dropped (count-field! signal m :droppedAttributesCount path)]
+    (cond->
+     {:name (optional-string! signal m :name path "")
+      :version (optional-string! signal m :version path nil)
+      :schema-url schema-url
+      :attributes (attributes! signal (field m :attributes) (conj path "attributes"))}
+      (pos? dropped) (assoc :dropped-attributes-count dropped))))
 (defn- error-map [signal e]
   (assoc (or (ex-data e) {:type ::invalid-value :signal signal :path []
                            :reason :decode-failure})
@@ -103,22 +106,27 @@
         body-v (field m :body)
         time-v (field m :timeUnixNano)
         observed-v (field m :observedTimeUnixNano)
-        trace-v (field m :traceId) span-v (field m :spanId) flags-v (field m :flags)]
-    {:body (if (present? body-v) (any-value! :logs body-v (conj path "body")) "")
-     :severity-number (let [v (field m :severityNumber)]
-                        (if (present? v) (uint32! :logs v (conj path "severityNumber")) 0))
-     :severity-text (optional-string! :logs m :severityText path nil)
-     :timestamp-unix-nano (when (present? time-v)
-                            (uint64! :logs time-v (conj path "timeUnixNano")))
-     :observed-time-unix-nano (if (present? observed-v)
-                                (uint64! :logs observed-v (conj path "observedTimeUnixNano")) 0)
-     :attributes (attributes! :logs (field m :attributes) (conj path "attributes"))
-     :dropped-attributes-count (count-field! :logs m :droppedAttributesCount path)
-     :trace-id (when (present? trace-v) (hex-id! :logs trace-v 32 (conj path "traceId")))
-     :span-id (when (present? span-v) (hex-id! :logs span-v 16 (conj path "spanId")))
-     :trace-flags (if (present? flags-v) (uint32! :logs flags-v (conj path "flags")) 0)
-     :event-name (optional-string! :logs m :eventName path nil)
-     :resource r :scope scope}))
+        trace-v (field m :traceId) span-v (field m :spanId) flags-v (field m :flags)
+        dropped (count-field! :logs m :droppedAttributesCount path)]
+    (cond->
+     {:body (if (present? body-v) (any-value! :logs body-v (conj path "body")) "")
+      :severity-number (let [v (field m :severityNumber)]
+                         (if (present? v) (uint32! :logs v (conj path "severityNumber")) 0))
+      :severity-text (optional-string! :logs m :severityText path nil)
+      :timestamp-unix-nano (when (present? time-v)
+                             (uint64! :logs time-v (conj path "timeUnixNano")))
+      :observed-time-unix-nano (if (present? observed-v)
+                                 (uint64! :logs observed-v (conj path "observedTimeUnixNano")) 0)
+      :attributes (attributes! :logs (field m :attributes) (conj path "attributes"))
+      :event-name (optional-string! :logs m :eventName path nil)
+      :resource r :scope scope}
+      (pos? dropped) (assoc :dropped-attributes-count dropped)
+      (present? trace-v) (assoc :trace-id
+                                (hex-id! :logs trace-v 32 (conj path "traceId")))
+      (present? span-v) (assoc :span-id
+                               (hex-id! :logs span-v 16 (conj path "spanId")))
+      (present? flags-v) (assoc :trace-flags
+                                (uint32! :logs flags-v (conj path "flags"))))))
 
 (defn- raw-record-count [scopes]
   (if (vector? scopes)
@@ -189,18 +197,21 @@
 
 (defn- number-point! [v path]
   (let [m (object! :metrics v path) iv (field m :asInt) dv (field m :asDouble)
+        start-v (field m :startTimeUnixNano)
         arms (count (filter present? [iv dv]))]
     (reject-unmodeled-point-fields! m path)
     (when-not (= 1 arms)
       (invalid! :metrics path :invalid-number-point "exactly one of asInt/asDouble" m))
-    {:attributes (attributes! :metrics (field m :attributes) (conj path "attributes"))
-     :start-time-unix-nano (let [x (field m :startTimeUnixNano)]
-                             (when (present? x) (uint64! :metrics x (conj path "startTimeUnixNano"))))
-     :time-unix-nano (let [x (field m :timeUnixNano)]
-                       (if (present? x) (uint64! :metrics x (conj path "timeUnixNano")) 0))
-     :value (if (present? iv)
-              (decimal! :metrics iv (conj path "asInt") -9223372036854775808 9223372036854775807)
-              (finite-number! :metrics dv (conj path "asDouble")))}))
+    (cond->
+     {:attributes (attributes! :metrics (field m :attributes) (conj path "attributes"))
+      :time-unix-nano (let [x (field m :timeUnixNano)]
+                        (if (present? x) (uint64! :metrics x (conj path "timeUnixNano")) 0))
+      :value (if (present? iv)
+               (decimal! :metrics iv (conj path "asInt") -9223372036854775808 9223372036854775807)
+               (finite-number! :metrics dv (conj path "asDouble")))}
+      (present? start-v)
+      (assoc :start-time-unix-nano
+             (uint64! :metrics start-v (conj path "startTimeUnixNano"))))))
 (defn- number-array! [v path]
   (let [xs (array! :metrics v path)]
     (mapv #(finite-number! :metrics %1 (conj path %2)) xs (range (count xs)))))
