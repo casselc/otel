@@ -93,6 +93,7 @@
       (is (one-canonical-crypto? [local]))
       (is (one-canonical-crypto? [hosted])))
     (testing "fork identity, wrong revision, and duplicate identities are red"
+      (is (not (one-canonical-crypto? [])))
       (is (not (one-canonical-crypto? [fork])))
       (is (not (one-canonical-crypto? [wrong-sha])))
       (is (not (one-canonical-crypto? [local hosted]))))))

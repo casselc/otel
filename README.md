@@ -13,7 +13,7 @@ correlates log lines with the span they were written inside.
 
 | Library | Why |
 | --- | --- |
-| [jolt-lang/http-client](https://github.com/jolt-lang/http-client) | OTLP transport, including TLS |
+| [casselc/http-client](https://github.com/casselc/http-client) | OTLP transport, including TLS |
 | [jolt-lang/jolt-crypto](https://github.com/jolt-lang/jolt-crypto) | the OpenSSL (`libssl`/`libcrypto`) declarations TLS needs |
 | [jolt-lang/logging](https://github.com/jolt-lang/logging) | `clojure.tools.logging`, for the logs bridge |
 
@@ -227,7 +227,7 @@ first-class encoding in the OTLP spec and interoperates with the OpenTelemetry
 Collector and every backend that accepts OTLP/HTTP. Traces go to `/v1/traces`,
 metrics to `/v1/metrics`, logs to `/v1/logs`.
 
-Transport is [jolt-lang/http-client](https://github.com/jolt-lang/http-client),
+Transport is [casselc/http-client](https://github.com/casselc/http-client),
 so **https endpoints work** — TLS comes from the system OpenSSL. `:insecure?`
 skips certificate verification for a collector with a self-signed cert; do not
 use it across an untrusted network.

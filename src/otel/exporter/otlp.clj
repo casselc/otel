@@ -9,7 +9,7 @@
     OTEL_EXPORTER_OTLP_HEADERS           comma-separated key=value request headers
     OTEL_EXPORTER_OTLP_TIMEOUT           per-request timeout in milliseconds
 
-  Both http and https endpoints work; TLS comes from jolt-lang/http-client over
+  Both http and https endpoints work; TLS comes from casselc/http-client over
   the system OpenSSL.
 
   Retries follow the OTLP spec: only the response codes the spec calls retryable
