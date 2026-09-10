@@ -54,6 +54,36 @@
     {:source source :aliases {'res 'otel.resource}}
     form)))
 
+(defn- nested-edn [depth]
+  (str (apply str (repeat depth "["))
+       "0"
+       (apply str (repeat depth "]"))))
+
+(defn- nested-value [depth]
+  (loop [remaining depth value 0]
+    (if (zero? remaining)
+      value
+      (recur (dec remaining) [value]))))
+
+(defn- utf8-length [text]
+  (alength (.getBytes text "UTF-8")))
+
+(defn- generated-input [number fragment]
+  (let [suffix (str number)
+        path (str "META-INF/otel/attribute-schema/generated-" suffix ".edn")
+        revision (str (apply str (repeat 39 "0")) suffix)]
+    {:path path
+     :fragment fragment
+     :index
+     (str (pr-str
+           {:schema discovery/index-schema-id
+            :artifact {:package (str "test/generated-" suffix)
+                       :repository (str "https://example.test/generated-" suffix)
+                       :revision revision}
+            :fragments [{:path path
+                         :sha256 (discovery/content-sha256 fragment)}]})
+          "\n")}))
+
 (deftest checked-library-and-local-advice-pack-remain-distinct
   (let [{:keys [indexes resources]} (fixture-input)
         bundle (discover indexes resources)
@@ -229,6 +259,110 @@
     (testing "trailing whitespace and comments are allowed"
       (is (= library-index
              (discovery/read-index (str (first indexes) "\n ; comment\n")))))))
+
+(deftest edn-nesting-is-bounded-before-recursive-reading
+  (let [limit discovery/max-edn-nesting-depth
+        exact-text (nested-edn limit)
+        over-text (nested-edn (inc limit))]
+    (testing "the exact boundary is accepted"
+      (with-redefs [discovery/validate-index identity]
+        (is (= (nested-value limit) (discovery/read-index exact-text)))))
+    (testing "one over fails with the index context's fixed diagnostic"
+      (with-redefs [discovery/validate-index identity]
+        (is (= :malformed-index
+               (:reason
+                (ex-data (failure #(discovery/read-index over-text))))))))
+    (testing "serialized bundles use the same pre-reader limit"
+      (with-redefs [discovery/validate-bundle identity]
+        (is (= (nested-value limit) (discovery/read-bundle exact-text)))
+        (is (= :invalid-bundle
+               (:reason
+                (ex-data (failure #(discovery/read-bundle over-text))))))))
+    (testing "unbounded-parser mutant reaches the recursive reader"
+      (with-redefs [discovery/max-edn-nesting-depth (inc limit)
+                    discovery/validate-index identity]
+        (is (= (nested-value (inc limit))
+               (discovery/read-index over-text)))))))
+
+(deftest fragment-nesting-fails-without-leaking-input
+  (let [{:keys [indexes]} (fixture-input)
+        original (parsed-index (first indexes))
+        path (get-in original [:fragments 0 :path])
+        secret "private-deep-fragment"
+        text (str (nested-edn (inc discovery/max-edn-nesting-depth))
+                  " ; " secret)
+        index (-> original
+                  (assoc-in [:fragments 0 :sha256]
+                            (discovery/content-sha256 text))
+                  index-text)
+        error (failure #(discover [index] {path text}))]
+    (is (= {:otel.attribute-schema.discovery/error :invalid-discovery
+            :reason :invalid-fragment}
+           (ex-data error)))
+    (is (not (str/includes? (pr-str (ex-data error)) secret)))))
+
+(deftest aggregate-text-and-byte-budgets-cover-all-inputs
+  (let [fragment (str (fixture "attribute-schema/ordinary-library.edn")
+                      " ; unicode-padding-é\n")
+        generated (mapv #(generated-input % fragment) (range 6))
+        indexes (mapv :index generated)
+        resources (into {} (map (juxt :path :fragment) generated))
+        total-chars (+ (reduce + 0 (map count indexes))
+                       (reduce + 0 (map #(count (:fragment %)) generated)))
+        total-bytes (+ (reduce + 0 (map utf8-length indexes))
+                       (reduce + 0 (map #(utf8-length (:fragment %)) generated)))]
+    (is (< total-chars total-bytes))
+    (testing "both exact aggregate boundaries are accepted"
+      (with-redefs [discovery/max-discovery-input-chars total-chars
+                    discovery/max-discovery-input-bytes total-bytes]
+        (is (= 6 (count (:fragments (discover indexes resources)))))))
+    (testing "one over the character or byte budget fails closed"
+      (doseq [[char-limit byte-limit]
+              [[(dec total-chars) total-bytes]
+               [total-chars (dec total-bytes)]]]
+        (with-redefs [discovery/max-discovery-input-chars char-limit
+                      discovery/max-discovery-input-bytes byte-limit]
+          (is (= {:otel.attribute-schema.discovery/error :invalid-discovery
+                  :reason :aggregate-input-too-large}
+                 (ex-data (failure #(discover indexes resources))))))))
+    (testing "many small resources stop before later reads or merge"
+      (let [index-chars (reduce + 0 (map count indexes))
+            reads (atom [])
+            merged? (atom false)
+            original-merge schema/merge-fragments]
+        (with-redefs [discovery/max-discovery-input-chars
+                      (+ index-chars (* 2 (count fragment)))
+                      discovery/max-discovery-input-bytes Integer/MAX_VALUE
+                      schema/merge-fragments
+                      (fn [& fragments]
+                        (reset! merged? true)
+                        (apply original-merge fragments))]
+          (is (= :aggregate-input-too-large
+                 (:reason
+                  (ex-data
+                   (failure
+                    #(discovery/discover
+                      indexes
+                      (fn [path]
+                        (swap! reads conj path)
+                        (get resources path))))))))
+          (is (= 3 (count @reads)))
+          (is (false? @merged?)))))))
+
+(deftest aggregate-decoded-entry-and-evidence-budgets-are-independent
+  (let [{:keys [indexes resources]} (fixture-input)]
+    (testing "exact decoded boundaries are accepted"
+      (with-redefs [discovery/max-discovery-entries 2
+                    discovery/max-discovery-evidence 2]
+        (is (= 2 (count (get-in (discover indexes resources)
+                                [:attribute-schema :entries]))))))
+    (testing "one over either decoded budget fails before merge"
+      (doseq [[entry-limit evidence-limit] [[1 2] [2 1]]]
+        (with-redefs [discovery/max-discovery-entries entry-limit
+                      discovery/max-discovery-evidence evidence-limit]
+          (is (= {:otel.attribute-schema.discovery/error :invalid-discovery
+                  :reason :aggregate-decoded-too-large}
+                 (ex-data (failure #(discover indexes resources))))))))))
 
 (deftest digest-input-must-be-exact-resource-text
   (doseq [value [nil 42 :text ["text"]]]

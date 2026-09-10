@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Bound discovery EDN to 64 structural nesting levels before recursive parsing,
+  and enforce aggregate character, UTF-8 byte, decoded-entry and evidence
+  budgets across all indexes and selected fragments. Over-budget discovery
+  stops before later resource reads or schema merging with redacted diagnostics.
 - Add explicit `otel.attribute-schema.index/v1` discovery with canonical
   package, repository, immutable revision/version, resource path and SHA-256
   identity. Deterministic artifact ordering, include/exclude selection,

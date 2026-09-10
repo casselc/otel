@@ -22,6 +22,21 @@
   Eight Mi characters bounds UTF-8 to at most 32 MiB, matching the downstream
   catalog wire limit even when every codepoint needs four bytes."
   (* 8 1024 1024))
+(def max-edn-nesting-depth
+  "Maximum structural EDN delimiters open at once before recursive parsing."
+  64)
+(def max-discovery-input-chars
+  "Aggregate index plus selected-fragment characters per discovery invocation."
+  (* 8 1024 1024))
+(def max-discovery-input-bytes
+  "Aggregate index plus selected-fragment UTF-8 bytes per discovery invocation."
+  (* 32 1024 1024))
+(def max-discovery-entries
+  "Aggregate named-entry plus dynamic-key records per discovery invocation."
+  65536)
+(def max-discovery-evidence
+  "Aggregate evidence records across decoded entries per discovery invocation."
+  262144)
 (def ^:private max-indexes 256)
 (def ^:private max-fragments 4096)
 (def ^:private allowed-option-keys #{:include :exclude})
@@ -36,10 +51,45 @@
 (defn- sha256? [value]
   (boolean (and (string? value) (re-matches #"[0-9a-f]{64}" value))))
 
+(defn- check-edn-depth! [text]
+  ;; This iterative lexical pass runs before either recursive reader. Delimiters
+  ;; inside strings, comments and character literals do not affect depth.
+  (loop [index 0 depth 0 state :normal]
+    (when (< index (count text))
+      (let [ch (.charAt text index)]
+        (case state
+          :string
+          (cond
+            (= ch \\) (recur (min (count text) (+ index 2)) depth :string)
+            (= 34 (int ch)) (recur (inc index) depth :normal)
+            :else (recur (inc index) depth :string))
+
+          :comment
+          (if (or (= ch \newline) (= ch \return))
+            (recur (inc index) depth :normal)
+            (recur (inc index) depth :comment))
+
+          (cond
+            (= 34 (int ch)) (recur (inc index) depth :string)
+            (= ch \;) (recur (inc index) depth :comment)
+            ;; Skip the first character of either a single-character literal or
+            ;; a named/unicode character token. Remaining token letters cannot
+            ;; contain structural delimiters in valid EDN.
+            (= ch \\) (recur (min (count text) (+ index 2)) depth :normal)
+            (contains? #{\( \[ \{} ch)
+            (let [next-depth (inc depth)]
+              (when (> next-depth max-edn-nesting-depth)
+                (throw (ex-info "EDN nesting exceeds the discovery limit" {})))
+              (recur (inc index) next-depth :normal))
+            (contains? #{\) \] \}} ch)
+            (recur (inc index) (max 0 (dec depth)) :normal)
+            :else (recur (inc index) depth :normal)))))))
+
 (defn- read-exact-edn [text]
   ;; Jolt's edn/read drains a Reader before parsing, so use the safe core reader
   ;; only to prove the one-form boundary, then let clojure.edn define the value
   ;; language. No tagged data reader or read-eval hook is allowed to run.
+  (check-edn-depth! text)
   (let [eof (Object.)]
     (with-open [reader (PushbackReader. (StringReader. text))]
       (binding [*read-eval* false
@@ -69,6 +119,53 @@
                  (every? allowed-option-keys (keys options)))
     (problem! :invalid-options))
   options)
+
+(defn- utf8-size [text]
+  (alength (.getBytes text "UTF-8")))
+
+(defn- text-char-count [text]
+  ;; JVM strings expose UTF-16 code units while Jolt strings are codepoint
+  ;; indexed. Collapse valid JVM surrogate pairs so aggregate character budgets
+  ;; have the same meaning on both hosts.
+  (let [length (count text)]
+    (loop [index 0 total 0]
+      (if (= index length)
+        total
+        (let [value (int (.charAt text index))
+              paired? (and (<= 0xd800 value 0xdbff)
+                           (< (inc index) length)
+                           (let [next-value (int (.charAt text (inc index)))]
+                             (<= 0xdc00 next-value 0xdfff)))]
+          (recur (+ index (if paired? 2 1)) (inc total)))))))
+
+(defn- new-budget []
+  (atom {:chars 0 :bytes 0 :entries 0 :evidence 0}))
+
+(defn- charge-input! [budget text]
+  (let [current @budget
+        charged (-> current
+                    (update :chars + (text-char-count text))
+                    (update :bytes + (utf8-size text)))]
+    (when (or (> (:chars charged) max-discovery-input-chars)
+              (> (:bytes charged) max-discovery-input-bytes))
+      (problem! :aggregate-input-too-large))
+    (reset! budget charged)))
+
+(defn- evidence-count [items]
+  (reduce + 0 (map #(count (:evidence %)) items)))
+
+(defn- charge-decoded! [budget fragment]
+  (let [entries (+ (count (:entries fragment))
+                   (count (:dynamic-keys fragment)))
+        evidence (+ (evidence-count (:entries fragment))
+                    (evidence-count (:dynamic-keys fragment)))
+        charged (-> @budget
+                    (update :entries + entries)
+                    (update :evidence + evidence))]
+    (when (or (> (:entries charged) max-discovery-entries)
+              (> (:evidence charged) max-discovery-evidence))
+      (problem! :aggregate-decoded-too-large))
+    (reset! budget charged)))
 
 (defn- revision? [value]
   (boolean (and (string? value) (re-matches #"[0-9a-f]{40}" value))))
@@ -138,11 +235,15 @@
       (problem! :malformed-index)))
   index)
 
+(defn- check-index-text! [text]
+  (when-not (and (string? text) (<= (text-char-count text) max-index-chars))
+    (problem! :malformed-index))
+  text)
+
 (defn read-index
   "Read and validate one bounded EDN index string without evaluation."
   [text]
-  (when-not (and (string? text) (<= (count text) max-index-chars))
-    (problem! :malformed-index))
+  (check-index-text! text)
   (try
     (validate-index (read-exact-edn text))
     (catch Exception error
@@ -222,15 +323,16 @@
                 claims)
       (problem! :conflicting-artifact-claim))))
 
-(defn- read-fragment! [read-resource item]
+(defn- read-fragment! [read-resource item budget]
   (let [text (try
                (read-resource (get-in item [:identity :path]))
                (catch Exception _error
                  (problem! :unreadable-resource)))]
     (when (nil? text)
       (problem! :missing-resource))
-    (when-not (and (string? text) (<= (count text) max-fragment-chars))
+    (when-not (and (string? text) (<= (text-char-count text) max-fragment-chars))
       (problem! :invalid-fragment))
+    (charge-input! budget text)
     (when-not (= (get-in item [:identity :sha256]) (content-sha256 text))
       (problem! :digest-mismatch))
     (let [fragment
@@ -238,7 +340,49 @@
             (attribute-schema/validate (read-exact-edn text))
             (catch Exception _error
               (problem! :invalid-fragment)))]
+      (charge-decoded! budget fragment)
       (assoc item :sources (:sources fragment) :fragment fragment))))
+
+(defn- read-indexes [index-texts budget charge?]
+  (reduce (fn [indexes text]
+            (check-index-text! text)
+            (when charge? (charge-input! budget text))
+            (conj indexes (read-index text)))
+          [] index-texts))
+
+(defn- discover* [index-texts read-resource options budget charge-indexes?]
+  (validate-options options)
+  (when-not (and (coll? index-texts) (<= (count index-texts) max-indexes))
+    (problem! :malformed-index))
+  (when-not (fn? read-resource)
+    (problem! :invalid-resource-reader))
+  (let [include (selectors (:include options))
+        exclude (selectors (:exclude options))
+        indexes (read-indexes index-texts budget charge-indexes?)
+        available (set (map #(get-in % [:artifact :package]) indexes))]
+    (when-not (every? available include)
+      (problem! :missing-included-artifact))
+    (let [items (->> indexes
+                     (filter #(selected? (:artifact %) include exclude))
+                     (mapcat (fn [{:keys [artifact fragments]}]
+                               (map (fn [fragment]
+                                      {:identity (identity artifact fragment)})
+                                    fragments)))
+                     vec)]
+      (when (> (count items) max-fragments)
+        (problem! :too-many-fragments))
+      (check-global-claims! items)
+      (let [loaded (->> items
+                        (sort-by identity-sort-key)
+                        (map #(read-fragment! read-resource % budget))
+                        vec)
+            checked (mapv #(update % :fragment semconv/check) loaded)
+            merged (apply attribute-schema/merge-fragments
+                          (map :fragment checked))]
+        (canonical-edn
+         {:schema bundle-schema-id
+          :fragments (mapv #(select-keys % [:identity :sources]) checked)
+          :attribute-schema merged})))))
 
 (defn discover
   "Discover and merge fragments from explicit index texts.
@@ -250,38 +394,7 @@
   ([index-texts read-resource]
    (discover index-texts read-resource {}))
   ([index-texts read-resource options]
-   (validate-options options)
-   (when-not (and (coll? index-texts) (<= (count index-texts) max-indexes))
-     (problem! :malformed-index))
-   (when-not (fn? read-resource)
-     (problem! :invalid-resource-reader))
-   (let [include (selectors (:include options))
-         exclude (selectors (:exclude options))
-         indexes (mapv read-index index-texts)
-         available (set (map #(get-in % [:artifact :package]) indexes))]
-     (when-not (every? available include)
-       (problem! :missing-included-artifact))
-     (let [items (->> indexes
-                      (filter #(selected? (:artifact %) include exclude))
-                      (mapcat (fn [{:keys [artifact fragments]}]
-                                (map (fn [fragment]
-                                       {:identity (identity artifact fragment)})
-                                     fragments)))
-                      vec)]
-       (when (> (count items) max-fragments)
-         (problem! :too-many-fragments))
-       (check-global-claims! items)
-       (let [loaded (->> items
-                         (sort-by identity-sort-key)
-                         (map #(read-fragment! read-resource %))
-                         vec)
-             checked (mapv #(update % :fragment semconv/check) loaded)
-             merged (apply attribute-schema/merge-fragments
-                           (map :fragment checked))]
-         (canonical-edn
-          {:schema bundle-schema-id
-           :fragments (mapv #(select-keys % [:identity :sources]) checked)
-           :attribute-schema merged}))))))
+   (discover* index-texts read-resource options (new-budget) true)))
 
 (defn validate-bundle
   "Validate and return one canonical otel.attribute-schema.bundle/v1 value.
@@ -331,7 +444,7 @@
   Parse, structure, provenance and semantic-convention failures all collapse to
   the same privacy-safe invalid-bundle diagnostic."
   [text]
-  (when-not (and (string? text) (<= (count text) max-bundle-text-chars))
+  (when-not (and (string? text) (<= (text-char-count text) max-bundle-text-chars))
     (problem! :invalid-bundle))
   (try
     (validate-bundle (read-exact-edn text))
@@ -342,7 +455,7 @@
   "Render a validated bundle as byte-deterministic canonical EDN."
   [bundle]
   (let [text (str (pr-str (validate-bundle bundle)) "\n")]
-    (when (> (count text) max-bundle-text-chars)
+    (when (> (text-char-count text) max-bundle-text-chars)
       (problem! :invalid-bundle))
     text))
 
@@ -376,7 +489,8 @@
                   (<= (count index-resources) max-indexes)
                   (= (count index-resources) (count (distinct index-resources))))
      (problem! :malformed-index))
-   (let [paths (mapv (fn [path]
+   (let [budget (new-budget)
+         paths (mapv (fn [path]
                        (try
                          (attribute-schema/canonical-source path)
                          (catch Exception _error
@@ -385,9 +499,13 @@
          read-classpath (fn [path]
                           (read-unique-classpath-resource
                            path :missing-resource :unreadable-resource))
-         index-texts (mapv (fn [path]
-                             (read-unique-classpath-resource
-                              path :missing-index-resource
-                              :unreadable-index-resource))
-                           paths)]
-     (discover index-texts read-classpath options))))
+         index-texts
+         (reduce (fn [texts path]
+                   (let [text (read-unique-classpath-resource
+                               path :missing-index-resource
+                               :unreadable-index-resource)]
+                     (check-index-text! text)
+                     (charge-input! budget text)
+                     (conj texts text)))
+                 [] paths)]
+     (discover* index-texts read-classpath options budget false))))
