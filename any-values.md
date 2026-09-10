@@ -158,6 +158,8 @@ exactly as before.
 
 The registry contains metadata only: it does not inspect observed attribute
 values, environment variables, host details, or absolute paths, and checking
-does not mutate a runtime schema. Build-resource discovery, advice-pack
-discovery, database schema generation and schema installation remain separate
-later phases.
+does not mutate a runtime schema. Explicit library and advice-pack resource
+discovery is documented in [Attribute-schema artifact
+discovery](attribute-schema-discovery.md). Operator-approved storage manifests,
+database schema generation and schema installation remain separate downstream
+phases.

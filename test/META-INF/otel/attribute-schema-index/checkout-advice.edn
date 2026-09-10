@@ -1,0 +1,1 @@
+{:schema "otel.attribute-schema.index/v1", :artifact {:package "local/checkout-advice", :repository "https://example.test/checkout-advice", :version "0.1.0"}, :fragments [{:path "META-INF/otel/attribute-schema/checkout-advice.edn", :sha256 "13ed7ab1d45439029c0ac07a72bd7ea56408c829abcdbc0678ef9a4702c96167"}]}
