@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Make decoded trace records match the canonical SDK-ended span shape while
+  preserving typed AnyValue distinctions. Span and link contexts use the shared
+  immutable context value, default-zero nested dropped counts stay absent, and a
+  malformed typed sibling is rejected without losing a valid span.
 - Converge the direct and HTTP-client-transitive `jolt-crypto` dependency on the
   canonical upstream repository and reviewed Jolt 0.8 revision, with a selected
   graph guard for local and hosted cache layouts.

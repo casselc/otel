@@ -4,9 +4,13 @@
             [hegel.clojure-test :refer [with]]
             [hegel.generator :as g]
             [otel.any-value :as any]
+            [otel.exporter.memory :as memory]
             [otel.otlp.encode :as encode]
             [otel.otlp.trace-decode :as decode]
-            [otel.resource :as resource]))
+            [otel.resource :as resource]
+            [otel.sdk.export :as export]
+            [otel.sdk.tracer :as sdk]
+            [otel.trace :as trace]))
 
 (def fixture
   (edn/read-string (slurp "test/fixtures/otlp/traces-v1.edn")))
@@ -127,6 +131,67 @@
         result (decode/decode-request request)]
     (is (= 1 (:rejected-spans result)))
     (is (= :wrong-type (get-in result [:errors 0 :reason])))))
+
+(def ^:private typed-attributes
+  {"array" [0 false "" any/empty-value]
+   "boolean" false
+   "boolean.text" "false"
+   "bytes" (any/bytes [0 255])
+   "double" 1.5
+   "empty.string" ""
+   "empty.value" any/empty-value
+   "integer" 42
+   "integer.max" any/max-int64
+   "integer.min" any/min-int64
+   "integer.text" "42"
+   "nested" {"enabled" false "items" [1 "two"]}
+   "zero" 0})
+
+(defn- sdk-ended-span []
+  (let [exporter (memory/exporter)
+        provider (sdk/tracer-provider
+                  {:resource (resource/resource {"resource.boolean" false})
+                   :processors [(export/simple-processor exporter)]})
+        tracer (sdk/get-tracer
+                provider
+                {:name "roundtrip" :version "1"
+                 :attributes {"scope.integer" 42}})
+        span (trace/start-span tracer "typed" {:attributes typed-attributes
+                                                :start-timestamp 10})
+        linked (trace/span-context
+                {:trace-id "10000000000000000000000000000000"
+                 :span-id "1000000000000000"
+                 :trace-flags 1})]
+    (trace/add-event! span "event" {"event.empty" any/empty-value} 15)
+    (trace/add-link! span linked {"link.bytes" (any/bytes [1 2])})
+    (trace/end! span 20)
+    (first (memory/spans exporter))))
+
+(deftest sdk-ended-span-is-the-canonical-receiver-record
+  (let [direct (sdk-ended-span)
+        result (decode/decode-request (encode/traces-request [direct]))
+        relayed (first (:spans result))]
+    (is (zero? (:rejected-spans result)))
+    (is (empty? (:errors result)))
+    (is (= direct relayed))
+    (is (= typed-attributes (:attributes relayed)))
+    (is (not (contains? (:attributes relayed) "absent")))
+    (doseq [value [(:resource relayed) (:scope relayed)
+                   (first (:events relayed)) (first (:links relayed))]]
+      (is (not (contains? value :dropped-attributes-count))))))
+
+(deftest malformed-typed-sibling-does-not-discard-a-valid-span
+  (let [direct (sdk-ended-span)
+        request (encode/traces-request [direct (assoc direct :name "malformed")])
+        malformed {:key "malformed"
+                   :value {:stringValue "42" :intValue "42"}}
+        request (update-in request [:resourceSpans 0 :scopeSpans 0 :spans 1
+                                    :attributes]
+                           conj malformed)
+        result (decode/decode-request request)]
+    (is (= ["typed"] (mapv :name (:spans result))))
+    (is (= 1 (:rejected-spans result)))
+    (is (= :multiple-arms (get-in result [:errors 0 :reason])))))
 
 (def id32-gen (g/regex-str #"[1-9a-f][0-9a-f]{31}"))
 (def id16-gen (g/regex-str #"[1-9a-f][0-9a-f]{15}"))

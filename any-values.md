@@ -74,9 +74,17 @@ paths and by attribute encoding. OTLP special double spellings (`NaN`,
 string fallback. Log bodies retain their older human-readable fallback for
 arbitrary Clojure objects; this contract applies to attribute collections.
 
+A focused trace relay fixture compares a canonical SDK-ended span directly with
+the record produced by `traces-request` followed by `decode-request`, including
+every value arm above and the absent-key distinction. Default-zero dropped
+counts on resources, scopes, events, and links stay absent in both records;
+positive counts remain explicit and survive the wire path.
+
 This representation follows the OpenTelemetry common attribute model and the
 OTLP JSON protobuf mapping. Safety bounds are an SDK policy layered on that wire
-model.
+model. The representative trace fixture is pinned to opentelemetry-proto commit
+`dfd0b0e8974eac54c4d99a84a86d6098e11ad1bd`; `index.md` carries the vendored
+OTLP text and links the v1.11.0 protobuf definitions.
 
 Static type inference, generated ClickHouse schemas, schema widening/evolution,
 and oscope query or UI changes are separate later phases. This runtime contract

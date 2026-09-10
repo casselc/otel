@@ -8,7 +8,8 @@
   SDK's exporters."
   (:require [clojure.string :as str]
             [otel.otlp.any-value :as wire-any]
-            [otel.resource :as resource]))
+            [otel.resource :as resource]
+            [otel.trace :as trace]))
 
 (def ^:private absent (Object.))
 
@@ -135,30 +136,34 @@
 (defn- event! [v path]
   (let [m (object! v path)
         time-v (field m :timeUnixNano)
-        name-v (field m :name)]
-    {:name (if (present? name-v) (string! name-v (conj path "name")) "")
-     :timestamp-unix-nano (if (present? time-v)
-                            (uint64! time-v (conj path "timeUnixNano")) 0)
-     :attributes (attributes! (field m :attributes) (conj path "attributes"))
-     :dropped-attributes-count (count! m :droppedAttributesCount path)}))
+        name-v (field m :name)
+        dropped (count! m :droppedAttributesCount path)]
+    (cond->
+     {:name (if (present? name-v) (string! name-v (conj path "name")) "")
+      :timestamp-unix-nano (if (present? time-v)
+                             (uint64! time-v (conj path "timeUnixNano")) 0)
+      :attributes (attributes! (field m :attributes) (conj path "attributes"))}
+      (pos? dropped) (assoc :dropped-attributes-count dropped))))
 
 (defn- link! [v path]
   (let [m (object! v path)
         trace-v (field m :traceId)
         span-v (field m :spanId)
-        flags-v (field m :flags)]
+        flags-v (field m :flags)
+        dropped (count! m :droppedAttributesCount path)]
     (when-not (present? trace-v)
       (invalid! (conj path "traceId") :missing-field "trace id" nil))
     (when-not (present? span-v)
       (invalid! (conj path "spanId") :missing-field "span id" nil))
-    {:span-context
-     {:trace-id (hex-id! trace-v 32 (conj path "traceId") false)
-      :span-id (hex-id! span-v 16 (conj path "spanId") false)
-      :trace-flags (if (present? flags-v) (uint32! flags-v (conj path "flags")) 0)
-      :trace-state (trace-state! (field m :traceState) (conj path "traceState"))
-      :remote? false}
-     :attributes (attributes! (field m :attributes) (conj path "attributes"))
-     :dropped-attributes-count (count! m :droppedAttributesCount path)}))
+    (cond->
+     {:span-context
+      (trace/span-context
+       {:trace-id (hex-id! trace-v 32 (conj path "traceId") false)
+        :span-id (hex-id! span-v 16 (conj path "spanId") false)
+        :trace-flags (if (present? flags-v) (uint32! flags-v (conj path "flags")) 0)
+        :trace-state (trace-state! (field m :traceState) (conj path "traceState"))})
+      :attributes (attributes! (field m :attributes) (conj path "attributes"))}
+      (pos? dropped) (assoc :dropped-attributes-count dropped))))
 
 (defn- status! [v path]
   (if-not (present? v)
@@ -184,11 +189,11 @@
         (invalid! (conj path k) :missing-field expected nil)))
     {:name (optional-string! m :name path "")
      :span-context
-     {:trace-id (hex-id! trace-v 32 (conj path "traceId") false)
-      :span-id (hex-id! span-v 16 (conj path "spanId") false)
-      :trace-flags (if (present? flags-v) (uint32! flags-v (conj path "flags")) 0)
-      :trace-state (trace-state! (field m :traceState) (conj path "traceState"))
-      :remote? false}
+     (trace/span-context
+      {:trace-id (hex-id! trace-v 32 (conj path "traceId") false)
+       :span-id (hex-id! span-v 16 (conj path "spanId") false)
+       :trace-flags (if (present? flags-v) (uint32! flags-v (conj path "flags")) 0)
+       :trace-state (trace-state! (field m :traceState) (conj path "traceState"))})
      :parent-span-id (if (present? parent-v)
                        (hex-id! parent-v 16 (conj path "parentSpanId") true) nil)
      :kind (enum! (field m :kind) (conj path "kind") kinds 0)
@@ -215,16 +220,20 @@
   (let [m (if (present? v) (object! v path) {})
         r (resource/resource
            (attributes! (field m :attributes) (conj path "attributes"))
-           {:schema-url schema-url})]
-    (assoc r :dropped-attributes-count (count! m :droppedAttributesCount path))))
+           {:schema-url schema-url})
+        dropped (count! m :droppedAttributesCount path)]
+    (cond-> r
+      (pos? dropped) (assoc :dropped-attributes-count dropped))))
 
 (defn- scope! [v schema-url path]
-  (let [m (if (present? v) (object! v path) {})]
-    {:name (optional-string! m :name path "")
-     :version (optional-string! m :version path nil)
-     :schema-url schema-url
-     :attributes (attributes! (field m :attributes) (conj path "attributes"))
-     :dropped-attributes-count (count! m :droppedAttributesCount path)}))
+  (let [m (if (present? v) (object! v path) {})
+        dropped (count! m :droppedAttributesCount path)]
+    (cond->
+     {:name (optional-string! m :name path "")
+      :version (optional-string! m :version path nil)
+      :schema-url schema-url
+      :attributes (attributes! (field m :attributes) (conj path "attributes"))}
+      (pos? dropped) (assoc :dropped-attributes-count dropped))))
 
 (defn- error-map [e]
   (assoc (or (ex-data e)
