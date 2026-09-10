@@ -1,0 +1,1 @@
+{:schema "otel.attribute-schema.index/v1", :artifact {:package "io.github.example/ordinary-library", :repository "https://github.com/example/ordinary-library", :revision "1111111111111111111111111111111111111111"}, :fragments [{:path "META-INF/otel/attribute-schema/ordinary-library.edn", :sha256 "1efdfd7ce57e6bbc603157eb77d3e0181e68b460907ae8341f040c389519e425"}]}

@@ -14,6 +14,7 @@
 ;; AOT closure needs to see.
 (def all-namespaces
   '[otel.any-value-test
+    otel.attribute-schema.discovery-test
     otel.attribute-schema-test
     otel.attributes-test
     otel.ci-workflow-test

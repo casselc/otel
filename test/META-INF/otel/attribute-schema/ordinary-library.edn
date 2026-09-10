@@ -1,0 +1,1 @@
+{:schema "otel.attribute-schema/v1", :sources ["src/shared.clj"], :entries [{:signal :resource, :location :attributes, :key "service.name", :types [:string], :unknown? false, :invalid? false, :conflict? false, :evidence [{:source "src/shared.clj", :kind :literal, :authority :literal}]}], :dynamic-keys? false, :dynamic-keys []}
