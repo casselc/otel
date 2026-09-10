@@ -16,6 +16,12 @@
 
 (def ^:private max-index-chars (* 2 1024 1024))
 (def ^:private max-fragment-chars (* 16 1024 1024))
+(def max-bundle-text-chars
+  "Maximum accepted serialized bundle characters.
+
+  Eight Mi characters bounds UTF-8 to at most 32 MiB, matching the downstream
+  catalog wire limit even when every codepoint needs four bytes."
+  (* 8 1024 1024))
 (def ^:private max-indexes 256)
 (def ^:private max-fragments 4096)
 (def ^:private allowed-option-keys #{:include :exclude})
@@ -277,8 +283,12 @@
            :fragments (mapv #(select-keys % [:identity :sources]) checked)
            :attribute-schema merged}))))))
 
-(defn render
-  "Render a discovered bundle as byte-deterministic canonical EDN."
+(defn validate-bundle
+  "Validate and return one canonical otel.attribute-schema.bundle/v1 value.
+
+  This validates the closed envelope, artifact claims, merged attribute schema,
+  and pinned semantic conventions. It does not prove that the merged schema was
+  derived from the fragment digests listed in the provenance records."
   [bundle]
   (let [fragments (:fragments bundle)]
     (when-not
@@ -307,14 +317,31 @@
             (attribute-schema/validate (:attribute-schema bundle))
             (catch Exception _error
               (problem! :invalid-bundle)))]
-      ;; Rendering is a public boundary too: do not let a caller bypass the
+      ;; Bundle validation is a public boundary: do not let a caller bypass the
       ;; pinned convention check with a structurally valid replacement.
       (semconv/check fragment)
-      (str (pr-str (canonical-edn
-                    {:schema bundle-schema-id
-                     :fragments fragments
-                     :attribute-schema fragment}))
-           "\n"))))
+      (canonical-edn
+       {:schema bundle-schema-id
+        :fragments fragments
+        :attribute-schema fragment}))))
+
+(defn read-bundle
+  "Read one bounded serialized bundle and return its canonical validated value.
+
+  Parse, structure, provenance and semantic-convention failures all collapse to
+  the same privacy-safe invalid-bundle diagnostic."
+  [text]
+  (when-not (and (string? text) (<= (count text) max-bundle-text-chars))
+    (problem! :invalid-bundle))
+  (try
+    (validate-bundle (read-exact-edn text))
+    (catch Exception _error
+      (problem! :invalid-bundle))))
+
+(defn render
+  "Render a validated bundle as byte-deterministic canonical EDN."
+  [bundle]
+  (str (pr-str (validate-bundle bundle)) "\n"))
 
 (defn- resource-urls [path]
   (try

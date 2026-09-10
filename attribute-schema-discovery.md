@@ -44,6 +44,21 @@ fails if an included package has no supplied index. Build systems that already
 own resource loading can call `discover` with the raw index texts and an
 injected resource reader; this is the shared merge implementation.
 
+Persist and consume the resulting pure build value through the validated bundle
+boundary:
+
+```clojure
+(def text (discovery/render bundle))
+(def checked-bundle (discovery/read-bundle text))
+```
+
+`validate-bundle` accepts an in-memory value and returns the same canonical form
+used by both functions. `read-bundle` requires a string containing exactly one
+EDN value and accepts at most 8,388,608 characters. That character limit bounds
+UTF-8 output to 32 MiB even for four-byte codepoints, matching the downstream
+catalog wire limit. Parse, envelope, provenance and semantic-convention failures
+are reported only as the fixed `:invalid-bundle` discovery classification.
+
 Every index and fragment is structurally validated before merging. Missing or
 unreadable resources, digest drift, duplicate locators, different digests for
 one locator, conflicting repository claims, and resource-path collisions fail
@@ -65,6 +80,11 @@ using the first classpath match. This checks resource uniqueness and content;
 portable classpath APIs do not attest that an index and fragment came from the
 same physical JAR or checkout. The artifact identity remains a validated
 publisher claim selected by the consuming build, not container-signing proof.
+Likewise, reading or validating a persisted bundle does not reload its fragment
+resources and therefore does not cryptographically prove that the merged
+attribute schema was derived from the listed fragment digests. That derivation
+is established only by the original `discover` operation; persistence retains
+its canonical result and validated claims.
 
 Diagnostics contain only bounded error classifications (or the pinned
 semantic-convention mismatch fields). They do not copy index text, fragment

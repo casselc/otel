@@ -87,7 +87,8 @@ dropped without escaping into the instrumented application. See
 [Attribute values](any-values.md) for the supported values and safety limits.
 Builds that consume source-inferred schema fragments from dependencies or local
 advice packs can use the explicit, digest-checked process in
-[Attribute-schema artifact discovery](attribute-schema-discovery.md).
+[Attribute-schema artifact discovery](attribute-schema-discovery.md), including
+the bounded `render` / `read-bundle` boundary for persisted build artifacts.
 
 `with-span` makes the span current for the body, ends it on the way out, and on
 a throw records the exception and sets the span's status to `:error` before

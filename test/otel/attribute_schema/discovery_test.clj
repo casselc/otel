@@ -111,6 +111,54 @@
             (ex-data
              (failure #(discovery/render (assoc bundle :unchecked true)))))))))
 
+(deftest serialized-bundles-round-trip-canonically
+  (let [{:keys [indexes resources]} (fixture-input)
+        bundle (discover indexes resources)
+        rendered (discovery/render bundle)
+        read-back (discovery/read-bundle rendered)
+        validated (discovery/validate-bundle (reverse-map-order bundle))]
+    (is (= bundle validated))
+    (is (= (pr-str bundle) (pr-str validated)))
+    (is (= bundle read-back))
+    (is (= rendered (discovery/render read-back)))))
+
+(deftest serialized-bundles-require-exactly-one-valid-value
+  (let [{:keys [indexes resources]} (fixture-input)
+        rendered (discovery/render (discover indexes resources))]
+    (doseq [suffix ["\n{}\n" "\n]"]]
+      (is (= {:otel.attribute-schema.discovery/error :invalid-discovery
+              :reason :invalid-bundle}
+             (ex-data
+              (failure #(discovery/read-bundle (str rendered suffix)))))))))
+
+(deftest serialized-bundle-failures-are-bounded-and-redacted
+  (let [{:keys [indexes resources]} (fixture-input)
+        bundle (discover indexes resources)
+        secret "/private/catalog/OTEL_TOKEN=secret"
+        conflict
+        (schema/analyze-form
+         {:source "src/private-host.clj" :aliases {'res 'otel.resource}}
+         '(res/resource {:service.name 42}))
+        inputs [(str "{:schema \"" secret "\"}")
+                (pr-str (assoc bundle :private secret))
+                (pr-str (assoc bundle :attribute-schema conflict))]]
+    (doseq [input inputs]
+      (let [error (failure #(discovery/read-bundle input))]
+        (is (= {:otel.attribute-schema.discovery/error :invalid-discovery
+                :reason :invalid-bundle}
+               (ex-data error)))
+        (is (not (str/includes? (ex-message error) secret)))
+        (is (not (str/includes? (pr-str (ex-data error)) secret)))))
+    (doseq [input [nil 42 {:private secret}]]
+      (is (= :invalid-bundle
+             (:reason (ex-data (failure #(discovery/read-bundle input)))))))
+    (with-redefs [discovery/max-bundle-text-chars 8]
+      (let [error (failure #(discovery/read-bundle (str secret "padding")))]
+        (is (= {:otel.attribute-schema.discovery/error :invalid-discovery
+                :reason :invalid-bundle}
+               (ex-data error)))
+        (is (not (str/includes? (pr-str (ex-data error)) secret)))))))
+
 (deftest explicit-package-selection-is-deterministic
   (let [{:keys [indexes resources]} (fixture-input)
         advice (discover indexes resources

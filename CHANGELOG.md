@@ -8,6 +8,8 @@
   collision and digest rejection, pinned semantic-convention checking, and
   privacy-safe diagnostics produce a pure `otel.attribute-schema.bundle/v1`
   build artifact while retaining unknown evidence and per-artifact provenance.
+  A bounded exact-one-value `read-bundle` / `validate-bundle` boundary supports
+  canonical persisted build artifacts without claiming new digest attestation.
 - Add a canonical `otel.semantic-conventions/v1` registry pinned to official
   OpenTelemetry semantic conventions v1.44.0 source files, with exact commit and
   SHA-256 provenance. Its checker rejects concrete standard resource/exception
