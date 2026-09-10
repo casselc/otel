@@ -17,6 +17,7 @@
     otel.attribute-schema-test
     otel.attributes-test
     otel.context-test
+    otel.dependency-resolution-test
     otel.sdk.clock-test
     otel.sdk.lifecycle-test
     otel.sdk-test
