@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Bound discovery EDN to a conservative shared budget of 64 open delimiters and
+  discard prefixes before recursive parsing, rejecting core-only reader macros
+  and tagged values while preserving sets and namespaced maps. Also enforce
+  aggregate character, UTF-8 byte, decoded-entry and evidence budgets across all
+  indexes and selected fragments. Over-budget discovery stops before later
+  resource reads or schema merging with redacted diagnostics.
 - Add explicit `otel.attribute-schema.index/v1` discovery with canonical
   package, repository, immutable revision/version, resource path and SHA-256
   identity. Deterministic artifact ordering, include/exclude selection,

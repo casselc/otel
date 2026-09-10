@@ -61,11 +61,32 @@ are reported only as the fixed `:invalid-bundle` discovery classification.
 `render` applies the same limit to its canonical text, so every successful
 render is accepted by `read-bundle` at that boundary.
 
-Residual limits are intentionally explicit: EDN parsing does not yet impose a
-separate nesting-depth budget, and discovery has no aggregate text budget across
-all indexes and fragments beyond the existing per-input sizes and collection
-counts. A streaming bounded reader would be a separate hardening follow-up; this
-slice does not add a large scanner.
+All index, fragment and serialized-bundle EDN is checked by an iterative lexical
+pass before either recursive reader runs. Structural delimiters inside strings,
+comments and character literals are ignored. Open delimiters and EDN discard
+prefixes share a conservative budget of 64; discard charges are retained, so a
+document with many non-nested discards may be rejected early rather than risk an
+undercount. Sets and namespaced maps remain accepted. Core-only quote, syntax
+quote, dereference, unquote and metadata prefixes, tagged values, and other
+dispatch macros are not part of the closed artifact format and are rejected by
+the preflight. Exact-one-value parsing and the no-evaluation/data-reader rules
+still apply afterward.
+
+One `discover` invocation also has aggregate budgets across every supplied index
+text and every selected fragment text it loads:
+
+- 8,388,608 characters and 33,554,432 UTF-8 bytes;
+- 65,536 decoded entries, counting both named entries and dynamic-key records;
+- 262,144 evidence records across those decoded entries.
+
+These are in addition to the existing per-resource and collection-count limits.
+Indexes are charged in their explicit order, then selected fragments in canonical
+artifact-identity order. The first input that would exceed a budget is rejected
+before parsing it; later fragment resources are not read and no merge occurs.
+The classpath helper likewise charges each index as it is loaded and stops before
+loading a later index. This closes the prior availability assumption that an
+operator-approved set of otherwise valid publishers is collectively small; it
+does not change the identity, provenance or bundle-attestation trust model.
 
 Every index and fragment is structurally validated before merging. Missing or
 unreadable resources, digest drift, duplicate locators, different digests for
