@@ -58,6 +58,14 @@ EDN value and accepts at most 8,388,608 characters. That character limit bounds
 UTF-8 output to 32 MiB even for four-byte codepoints, matching the downstream
 catalog wire limit. Parse, envelope, provenance and semantic-convention failures
 are reported only as the fixed `:invalid-bundle` discovery classification.
+`render` applies the same limit to its canonical text, so every successful
+render is accepted by `read-bundle` at that boundary.
+
+Residual limits are intentionally explicit: EDN parsing does not yet impose a
+separate nesting-depth budget, and discovery has no aggregate text budget across
+all indexes and fragments beyond the existing per-input sizes and collection
+counts. A streaming bounded reader would be a separate hardening follow-up; this
+slice does not add a large scanner.
 
 Every index and fragment is structurally validated before merging. Missing or
 unreadable resources, digest drift, duplicate locators, different digests for

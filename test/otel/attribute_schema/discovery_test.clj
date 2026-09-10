@@ -122,6 +122,22 @@
     (is (= bundle read-back))
     (is (= rendered (discovery/render read-back)))))
 
+(deftest serialized-render-and-read-share-the-same-character-bound
+  (let [{:keys [indexes resources]} (fixture-input)
+        bundle (discover indexes resources)
+        rendered (discovery/render bundle)
+        exact-count (count rendered)]
+    (with-redefs [discovery/max-bundle-text-chars exact-count]
+      (is (= rendered (discovery/render bundle)))
+      (is (= bundle (discovery/read-bundle rendered))))
+    (with-redefs [discovery/max-bundle-text-chars (dec exact-count)]
+      (is (= {:otel.attribute-schema.discovery/error :invalid-discovery
+              :reason :invalid-bundle}
+             (ex-data (failure #(discovery/render bundle)))))
+      (is (= :invalid-bundle
+             (:reason
+              (ex-data (failure #(discovery/read-bundle rendered)))))))))
+
 (deftest serialized-bundles-require-exactly-one-valid-value
   (let [{:keys [indexes resources]} (fixture-input)
         rendered (discovery/render (discover indexes resources))]

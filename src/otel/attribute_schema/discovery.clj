@@ -341,7 +341,10 @@
 (defn render
   "Render a validated bundle as byte-deterministic canonical EDN."
   [bundle]
-  (str (pr-str (validate-bundle bundle)) "\n"))
+  (let [text (str (pr-str (validate-bundle bundle)) "\n")]
+    (when (> (count text) max-bundle-text-chars)
+      (problem! :invalid-bundle))
+    text))
 
 (defn- resource-urls [path]
   (try
