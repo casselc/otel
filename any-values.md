@@ -88,8 +88,12 @@ infer a schema by observing values.
 `otel.attribute-schema` can inspect explicitly listed Clojure source files and
 return a deterministic, storage-neutral EDN fragment. It recognizes exact OTel
 API calls, literal attribute maps and keys, the canonical byte and empty-value
-constructors, and ordinary scalar casts. Dynamic forms remain visibly unknown;
-conflicting evidence is retained rather than widened or guessed.
+constructors, and ordinary scalar casts. It also distinguishes attributes on
+spans, metrics, logs, and resources from instrumentation-scope attributes passed
+to `get-tracer`, `get-meter`, and `get-logger`. Dynamic forms remain visibly
+unknown; conflicting evidence is retained rather than widened or guessed.
+Dynamic acquisition option maps are likewise recorded as unknown scope evidence,
+including computed option keys that could resolve to `:attributes` at runtime.
 
 ```sh
 jolt -M -m otel.attribute-schema.main --root . src/my/app.clj \
@@ -101,7 +105,13 @@ ClickHouse type, or apply a database migration. Source paths in the artifact are
 project-relative, and there are no timestamps or checkout paths, so running the
 same analysis twice produces byte-identical EDN. The initial analyzer is
 deliberately shallow: helper-built or otherwise dynamic maps need an explicit
-future declaration or remain unknown. Bare auto-resolved keyword keys (`::key`)
+future declaration or remain unknown. Calls resolve through namespace aliases,
+referred vars, source-order top-level definitions, and lexical bindings in the
+standard `let`/`loop`, conditional binding, `fn`/`defn`, `letfn`, and
+comprehension forms. Destructured locals shadow referred vars; a qualified alias
+remains a namespace reference, matching Clojure call resolution. The analyzer
+does not expand arbitrary user macros, so it does not claim evidence for calls
+that exist only after macro expansion. Bare auto-resolved keyword keys (`::key`)
 are reported as dynamic. Alias-qualified auto-resolved keys (`::alias/key`) are
 unsupported and fail closed with a sanitized diagnostic: resolving them
 correctly requires the compiler's namespace environment, which this source-only
