@@ -1,5 +1,7 @@
 {:paths ["src"]
 
+ :jolt/min-version "0.8.0"
+
  ;; OTLP export goes over casselc/http-client (clj-http-lite on jolt), which
  ;; brings TLS through the system OpenSSL — so an https collector endpoint works
  ;; without this library owning a socket or a TLS handshake. jolt-crypto is
@@ -7,9 +9,9 @@
  ;; supplies libssl/libcrypto, and naming it makes the OpenSSL requirement
  ;; visible rather than an implicit transitive fact.
  :deps {io.github.casselc/http-client {:git/url "https://github.com/casselc/http-client.git"
-                                      :git/sha "eba91d0536fee73ee192f68676915e48be23b348"}
-        jolt-lang/jolt-crypto {:git/url "https://github.com/jolt-lang/jolt-crypto"
-                               :git/sha "8a3247f698fbd462cddae9b206a7e3b3aac1bb92"}
+                                      :git/sha "a42592a690000fcb749f608a94053695e467c836"}
+        jolt-lang/jolt-crypto {:git/url "https://github.com/casselc/jolt-crypto.git"
+                               :git/sha "8bd234142d56dd75d36d58065a311f29fa08611e"}
         org.clojure/tools.logging {:git/url "https://github.com/jolt-lang/logging"
                                    :git/sha "ec6747e55583118d881faf4ab41e68d7e587ce4c"}}
 

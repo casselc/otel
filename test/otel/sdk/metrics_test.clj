@@ -216,6 +216,23 @@
       (is (= {"empty" any/empty-value "mode" "fast"} (:attributes scope)))
       (is (= 1 (:dropped-attributes-count scope))))))
 
+(deftest typed-meter-scopes-respect-provider-shutdown
+  (let [provider (sdk/meter-provider {:resource res/empty-resource})
+        meter (sdk/get-meter provider {:name "lib"
+                                       :attributes {:attempts 42
+                                                    :enabled false
+                                                    :dropped nil}})]
+    (api/add! (api/counter meter "requests") 1)
+    (let [scope (:scope (first (sdk/collect! provider)))]
+      (is (= {"attempts" 42 "enabled" false} (:attributes scope)))
+      (is (= 1 (:dropped-attributes-count scope))))
+    (is (true? (sdk/shutdown! provider)))
+    (is (identical? api/noop-meter
+                    (sdk/get-meter provider
+                                   {:name "late"
+                                    :attributes {:attempts 43}})))
+    (is (= [] (sdk/collect! provider)))))
+
 ;; --- periodic reader synchronization ---------------------------------------
 
 (deftest metric-force-flush-waits-for-an-in-flight-periodic-export
