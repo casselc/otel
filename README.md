@@ -13,12 +13,16 @@ correlates log lines with the span they were written inside.
 
 | Library | Why |
 | --- | --- |
-| [jolt-lang/http-client](https://github.com/jolt-lang/http-client) | OTLP transport, including TLS |
+| [casselc/http-client](https://github.com/casselc/http-client) | OTLP transport, including TLS |
 | [jolt-lang/jolt-crypto](https://github.com/jolt-lang/jolt-crypto) | the OpenSSL (`libssl`/`libcrypto`) declarations TLS needs |
 | [jolt-lang/logging](https://github.com/jolt-lang/logging) | `clojure.tools.logging`, for the logs bridge |
 
 All three are git coordinates in `deps.edn`; https also needs the system OpenSSL
 (`brew install openssl@3` on macOS, the distro `libssl3` on Linux).
+The direct crypto coordinate deliberately matches the HTTP client's transitive
+URL and full revision, so Jolt selects one canonical checkout rather than loading
+the same native providers from fork and upstream identities. CI checks the
+selected graph under both known local and hosted cache layouts.
 
 ## Requirements
 
@@ -223,7 +227,7 @@ first-class encoding in the OTLP spec and interoperates with the OpenTelemetry
 Collector and every backend that accepts OTLP/HTTP. Traces go to `/v1/traces`,
 metrics to `/v1/metrics`, logs to `/v1/logs`.
 
-Transport is [jolt-lang/http-client](https://github.com/jolt-lang/http-client),
+Transport is [casselc/http-client](https://github.com/casselc/http-client),
 so **https endpoints work** — TLS comes from the system OpenSSL. `:insecure?`
 skips certificate verification for a collector with a self-signed cert; do not
 use it across an untrusted network.
@@ -290,6 +294,7 @@ durations.
 ```bash
 jolt test                                  # everything
 jolt -M:test -m otel.test-runner trace     # one suite
+jolt -M:test -m otel.test-runner dependency-resolution # dependency graph only
 ```
 
 ## License

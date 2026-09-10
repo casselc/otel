@@ -47,6 +47,8 @@ jobs:
           set -euo pipefail
           test "$(jolt --version)" = "jolt v$JOLT_VERSION"
           jolt -Srepro -Sdescribe
+      - name: Verify canonical dependency graph
+        run: jolt -Srepro -M:test -m otel.test-runner otel.dependency-resolution
       - name: Install pinned Hegel native test library
         run: jolt -Srepro -A:test -m hegel.install
       - name: Run aggregate tests

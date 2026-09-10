@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Converge the direct and HTTP-client-transitive `jolt-crypto` dependency on the
+  canonical upstream repository and reviewed Jolt 0.8 revision, with a selected
+  graph guard for local and hosted cache layouts.
 - Test pull requests and `main` on hosted Linux with checksum-pinned Jolt 0.8.3,
   isolated reproducible caches, least-privilege permissions, and a bounded job.
 - Make batch span, periodic metric, and batch log shutdown wait for actual worker
