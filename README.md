@@ -19,6 +19,10 @@ correlates log lines with the span they were written inside.
 
 All three are git coordinates in `deps.edn`; https also needs the system OpenSSL
 (`brew install openssl@3` on macOS, the distro `libssl3` on Linux).
+The direct crypto coordinate deliberately matches the HTTP client's transitive
+URL and full revision, so Jolt selects one canonical checkout rather than loading
+the same native providers from fork and upstream identities. CI checks the
+selected graph under both known local and hosted cache layouts.
 
 ## Requirements
 
@@ -290,6 +294,7 @@ durations.
 ```bash
 jolt test                                  # everything
 jolt -M:test -m otel.test-runner trace     # one suite
+jolt -M:test -m otel.test-runner dependency-resolution # dependency graph only
 ```
 
 ## License
