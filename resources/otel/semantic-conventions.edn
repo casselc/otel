@@ -1,0 +1,67 @@
+{:schema "otel.semantic-conventions/v1"
+ :provenance
+ {:repository "https://github.com/open-telemetry/semantic-conventions"
+  :release "v1.44.0"
+  :commit "e10a930844c6951757a43b849d364f7d056ac32b"
+  :files
+  [{:path "model/exceptions/registry.yaml"
+    :sha256 "6754a8d009e6f4dc9cb799e55aa35db89c9f818e4daf8e5a4ef024760e73af6e"}
+   {:path "model/host/registry.yaml"
+    :sha256 "ccc9c78f0128cf788293ac53f05896df6435c6cdd2b6788cda0d4d13eee94049"}
+   {:path "model/os/registry.yaml"
+    :sha256 "17bd52eabf7159728fe9270a51c1087178a8e2c0cbba3ed7a7ff9a4e8ba26482"}
+   {:path "model/process/registry.yaml"
+    :sha256 "65d911b08b64051185fe2572f45ecabb29fbe91d0d176a2f937ab064e0ff0bcb"}
+   {:path "model/service/registry.yaml"
+    :sha256 "1d0be703a9970e94f8f52000d63f0660bf485434df941923abbc03b110f97ef7"}
+   {:path "model/telemetry/registry.yaml"
+    :sha256 "708498d6a0f20ee95ab53cfb6ff8da1f0963f9b6fd6763b6b7ae91f5ff29804e"}]}
+ :entries
+ [{:key "exception.message"
+   :locations [[:log :attributes] [:span :attributes]]
+   :type :string
+   :stability :stable}
+  {:key "exception.type"
+   :locations [[:log :attributes] [:span :attributes]]
+   :type :string
+   :stability :stable}
+  {:key "host.arch"
+   :locations [[:resource :attributes]]
+   :type :string
+   :stability :development}
+  {:key "os.type"
+   :locations [[:resource :attributes]]
+   :type :string
+   :stability :development}
+  {:key "process.pid"
+   :locations [[:resource :attributes]]
+   :type :int64
+   :stability :release-candidate}
+  {:key "process.runtime.description"
+   :locations [[:resource :attributes]]
+   :type :string
+   :stability :release-candidate}
+  {:key "process.runtime.name"
+   :locations [[:resource :attributes]]
+   :type :string
+   :stability :release-candidate}
+  {:key "process.runtime.version"
+   :locations [[:resource :attributes]]
+   :type :string
+   :stability :release-candidate}
+  {:key "service.name"
+   :locations [[:resource :attributes]]
+   :type :string
+   :stability :stable}
+  {:key "telemetry.sdk.language"
+   :locations [[:resource :attributes]]
+   :type :string
+   :stability :stable}
+  {:key "telemetry.sdk.name"
+   :locations [[:resource :attributes]]
+   :type :string
+   :stability :stable}
+  {:key "telemetry.sdk.version"
+   :locations [[:resource :attributes]]
+   :type :string
+   :stability :stable}]}

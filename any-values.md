@@ -135,3 +135,27 @@ The source list and `--root` are trusted build inputs, not a filesystem sandbox.
 Each source name is validated before any read and cannot be absolute or contain
 `.` or `..` components, but the portable CLI does not resolve or police symlinks
 inside the supplied root.
+
+## Pinned semantic conventions
+
+`otel.semantic-conventions` checks an existing `otel.attribute-schema/v1`
+fragment against a small immutable registry of standard resource and exception
+attributes that this library emits. The registry is
+`resources/otel/semantic-conventions.edn`; it pins OpenTelemetry semantic
+conventions v1.44.0 at full commit
+`e10a930844c6951757a43b849d364f7d056ac32b` and records the SHA-256 digest of
+each upstream registry source file used to transcribe its entries.
+
+The checker requires exact type equality at a registered signal/location.
+In particular, an `:int64` convention is never widened to `:double`. A known
+literal, constructor, or cast with a conflicting type fails with deterministic,
+sanitized exception data. Dynamic values, unregistered keys (including this
+library's `exception.data` extension), and uses outside a registered location
+remain on the existing fallback path. Conflicts between literals for an
+unregistered key remain visible in the original fragment exactly as before.
+
+The registry contains metadata only: it does not inspect observed attribute
+values, environment variables, host details, or absolute paths, and checking
+does not mutate a runtime schema. Build-resource discovery, advice-pack
+discovery, database schema generation and schema installation remain separate
+later phases.

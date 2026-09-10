@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add a canonical `otel.semantic-conventions/v1` registry pinned to official
+  OpenTelemetry semantic conventions v1.44.0 source files, with exact commit and
+  SHA-256 provenance. Its checker rejects concrete standard resource/exception
+  type mismatches without widening int64, while dynamic and unregistered
+  evidence retains the existing fallback behavior and sanitized diagnostics do
+  not disclose source paths or observed values.
 - Align decoded log and metric shapes with their canonical SDK exporter inputs:
   absent log correlation fields, gauge start time, and default-zero resource,
   scope, or log dropped counts stay absent, while positive counts survive.

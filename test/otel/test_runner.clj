@@ -34,6 +34,7 @@
     otel.otlp.trace-decode-test
     otel.propagation-test
     otel.resource-test
+    otel.semantic-conventions-test
     otel.trace-test])
 
 (defn -main [& args]
