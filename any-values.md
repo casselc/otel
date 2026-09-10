@@ -82,3 +82,32 @@ Static type inference, generated ClickHouse schemas, schema widening/evolution,
 and oscope query or UI changes are separate later phases. This runtime contract
 is the validation and fallback layer those features can consume; it does not
 infer a schema by observing values.
+
+## Source-inferred hints
+
+`otel.attribute-schema` can inspect explicitly listed Clojure source files and
+return a deterministic, storage-neutral EDN fragment. It recognizes exact OTel
+API calls, literal attribute maps and keys, the canonical byte and empty-value
+constructors, and ordinary scalar casts. Dynamic forms remain visibly unknown;
+conflicting evidence is retained rather than widened or guessed.
+
+```sh
+jolt -M -m otel.attribute-schema.main --root . src/my/app.clj \
+  > target/META-INF/otel/attribute-schema/my-app.edn
+```
+
+The analyzer does not evaluate source, mutate macro-expansion state, infer a
+ClickHouse type, or apply a database migration. Source paths in the artifact are
+project-relative, and there are no timestamps or checkout paths, so running the
+same analysis twice produces byte-identical EDN. The initial analyzer is
+deliberately shallow: helper-built or otherwise dynamic maps need an explicit
+future declaration or remain unknown. Bare auto-resolved keyword keys (`::key`)
+are reported as dynamic. Alias-qualified auto-resolved keys (`::alias/key`) are
+unsupported and fail closed with a sanitized diagnostic: resolving them
+correctly requires the compiler's namespace environment, which this source-only
+analyzer deliberately does not invent.
+
+The source list and `--root` are trusted build inputs, not a filesystem sandbox.
+Each source name is validated before any read and cannot be absolute or contain
+`.` or `..` components, but the portable CLI does not resolve or police symlinks
+inside the supplied root.
