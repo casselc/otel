@@ -40,6 +40,29 @@
   (flush-exporter! [_] true)
   (shutdown-exporter! [_] true))
 
+(defrecord LifecycleSpanExporter [events fail-flush? throw-shutdown?]
+  export/SpanExporter
+  (export-spans! [_ _]
+    (swap! events conj [:export (ctx/instrumentation-suppressed?)])
+    true)
+  (flush-exporter! [_]
+    (swap! events conj [:flush (ctx/instrumentation-suppressed?)])
+    (not fail-flush?))
+  (shutdown-exporter! [_]
+    (swap! events conj [:shutdown (ctx/instrumentation-suppressed?)])
+    (if throw-shutdown?
+      (throw (ex-info "destination shutdown failed with Authorization credential"
+                      {:headers {"Authorization" "Basic secret"}}))
+      true)))
+
+(defn- await!
+  [pred timeout-ms]
+  (loop [remaining timeout-ms]
+    (cond
+      (pred) true
+      (pos? remaining) (do (Thread/sleep 5) (recur (- remaining 5)))
+      :else false)))
+
 ;; --- basic recording --------------------------------------------------------
 
 (deftest a-finished-span-reaches-the-exporter
@@ -401,6 +424,197 @@
     (trace/with-span [sp tracer "op"])
     (is (= 1 (count (memory/spans e1))))
     (is (= 1 (count (memory/spans e2))))))
+
+(deftest independent-batch-pipelines-preserve-one-canonical-trace
+  (let [local (memory/exporter)
+        remote (memory/exporter)
+        pipelines (export/independent-batch-pipelines
+                    {:local {:exporter local :config {:schedule-delay-ms 60000}}
+                     :remote {:exporter remote :config {:schedule-delay-ms 60000}}})
+        provider (sdk/tracer-provider {:processors [pipelines]
+                                       :resource res/empty-resource})
+        tracer (sdk/get-tracer provider {:name "s"})]
+    (try
+      (trace/with-span [outer tracer "outer"]
+        (trace/with-span [inner tracer "inner"]))
+      (is (= {:local {:ok? true} :remote {:ok? true}}
+             (export/force-flush-pipelines! pipelines)))
+      (let [local-by-name (into {} (map (juxt :name identity) (memory/spans local)))
+            remote-by-name (into {} (map (juxt :name identity) (memory/spans remote)))]
+        (is (= local-by-name remote-by-name)
+            "both destinations receive the same ended span values")
+        (is (= (get-in local-by-name ["outer" :span-context :trace-id])
+               (get-in local-by-name ["inner" :span-context :trace-id])))
+        (is (= (get-in local-by-name ["outer" :span-context :span-id])
+               (get-in local-by-name ["inner" :parent-span-id]))))
+      (finally (sdk/shutdown! provider)))))
+
+(deftest independent-pipelines-validate-the-complete-graph-before-workers-start
+  (let [constructed (atom [])
+        valid-exporter (memory/exporter)]
+    (with-redefs [export/batch-processor
+                  (fn [exporter config]
+                    (swap! constructed conj [exporter config])
+                    ::processor)]
+      (is (thrown? Exception
+                   (export/independent-batch-pipelines
+                    {:valid {:exporter valid-exporter :config {}}
+                     :invalid {:exporter ::not-an-exporter :config {}}})))
+      (is (= [] @constructed)
+          "a later invalid exporter cannot strand an earlier worker")
+      (is (thrown? Exception
+                   (export/independent-batch-pipelines
+                    {:valid {:exporter valid-exporter :config {}}
+                     :invalid {:exporter valid-exporter :config [:not :a-map]}})))
+      (is (= [] @constructed)
+          "a later invalid config cannot strand an earlier worker")
+      (is (thrown? Exception
+                   (export/independent-batch-pipelines
+                    {:valid {:exporter valid-exporter :config {}}
+                     :invalid {:exporter valid-exporter
+                               :config {:max-queue-size 0}}})))
+      (is (= [] @constructed)
+          "a later invalid batch value cannot strand an earlier worker"))))
+
+(deftest batch-processor-rejects-invalid-options-before-starting
+  (let [exporter (memory/exporter)]
+    (doseq [config [{:max-queue-size 0}
+                    {:max-export-batch-size -1}
+                    {:schedule-delay-ms 0}
+                    {:schedule-delay-ms 1.5}]]
+      (is (thrown? Exception (export/batch-processor exporter config))
+          (str "accepted invalid batch config " config)))))
+
+(deftest independent-pipelines-isolate-processor-admission-failures
+  (let [events (atom [])
+        broken (reify export/SpanProcessor
+                 (on-start [_ _ _]
+                   (throw (ex-info "processor start failed" {})))
+                 (on-end [_ _]
+                   (throw (ex-info "processor end failed" {})))
+                 (force-flush! [_] true)
+                 (shutdown! [_] true))
+        healthy (reify export/SpanProcessor
+                  (on-start [_ span _]
+                    (swap! events conj [:start span]))
+                  (on-end [_ span]
+                    (swap! events conj [:end span]))
+                  (force-flush! [_] true)
+                  (shutdown! [_] true))
+        pipelines (export/->IndependentBatchSpanPipelines
+                   [[:broken broken] [:healthy healthy]] (atom nil))]
+    (is (nil? (export/on-start pipelines ::span ::parent)))
+    (is (nil? (export/on-end pipelines ::span)))
+    (is (= [[:start ::span] [:end ::span]] @events)
+        "a broken destination neither escapes nor skips a later destination")))
+
+(deftest a-stalled-overflowing-pipeline-does-not-stop-local-progress
+  (let [entered (promise)
+        release (promise)
+        remote (->BlockingSpanExporter entered release (atom false))
+        local (memory/exporter)
+        pipelines (export/independent-batch-pipelines
+                    {:remote {:exporter remote
+                              :config {:schedule-delay-ms 1
+                                       :max-queue-size 2
+                                       :max-export-batch-size 1}}
+                     :local {:exporter local
+                             :config {:schedule-delay-ms 1}}})
+        provider (sdk/tracer-provider {:processors [pipelines]
+                                       :resource res/empty-resource})
+        tracer (sdk/get-tracer provider {:name "s"})]
+    (try
+      (trace/with-span [sp tracer "first"])
+      (is (= true (deref entered 2000 ::timeout))
+          "the remote worker is held inside exporter I/O")
+      (dotimes [i 10]
+        (trace/with-span [sp tracer (str "local-" i)]))
+      (is (await! #(= 11 (count (memory/spans local))) 2000)
+          "the local worker exports while the remote worker is stalled")
+      (is (pos? (get-in (export/pipeline-stats pipelines)
+                        [:remote :dropped-count]))
+          "only the remote bounded queue overflows")
+      (is (zero? (get-in (export/pipeline-stats pipelines)
+                         [:local :dropped-count])))
+      (finally
+        (deliver release true)
+        (sdk/shutdown! provider)))))
+
+(deftest pipeline-lifecycle-reports-each-result-and-cleans-up-every-destination
+  (let [failing-events (atom [])
+        healthy-events (atom [])
+        failing (->LifecycleSpanExporter failing-events true true)
+        healthy (->LifecycleSpanExporter healthy-events false false)
+        pipelines (export/independent-batch-pipelines
+                    {:failing {:exporter failing :config {:schedule-delay-ms 60000}}
+                     :healthy {:exporter healthy :config {:schedule-delay-ms 60000}}})
+        provider (sdk/tracer-provider {:processors [pipelines]
+                                       :resource res/empty-resource})
+        tracer (sdk/get-tracer provider {:name "s"})]
+    (trace/with-span [sp tracer "op"])
+    (let [flush-results (export/force-flush-pipelines! pipelines)]
+      (is (= {:ok? false :failure :returned-false}
+             (:failing flush-results)))
+      (is (= {:ok? true} (:healthy flush-results))))
+    (let [first-results (export/shutdown-pipelines! pipelines)
+          second-results (export/shutdown-pipelines! pipelines)]
+      (is (= {:ok? false :failure :threw} (:failing first-results)))
+      (is (= {:ok? true} (:healthy first-results)))
+      (is (= #{:ok? :failure} (set (keys (:failing first-results))))
+          "the result has no raw error, message, or ex-data field")
+      (is (not (.contains (pr-str first-results) "Authorization")))
+      (is (not (.contains (pr-str first-results) "secret"))
+          "public results contain no throwable, message, or exception data")
+      (is (identical? first-results second-results)
+          "later shutdown callers observe the cached result object"))
+    (is (= 1 (count (filter #(= :shutdown (first %)) @failing-events))))
+    (is (= 1 (count (filter #(= :shutdown (first %)) @healthy-events)))
+        "a prior destination failure cannot skip later cleanup")
+    (is (every? true? (map second (concat @failing-events @healthy-events)))
+        "every exporter callback runs with instrumentation suppressed")))
+
+(deftest pipeline-force-flush-redacts-throws-and-attempts-every-destination
+  (let [healthy-flushes (atom 0)
+        throwing (reify export/SpanExporter
+                   (export-spans! [_ _] true)
+                   (flush-exporter! [_]
+                     (throw (ex-info "Authorization secret" {:token "secret"})))
+                   (shutdown-exporter! [_] true))
+        healthy (reify export/SpanExporter
+                  (export-spans! [_ _] true)
+                  (flush-exporter! [_] (swap! healthy-flushes inc) true)
+                  (shutdown-exporter! [_] true))
+        pipelines (export/independent-batch-pipelines
+                   (array-map
+                    :throwing {:exporter throwing
+                               :config {:schedule-delay-ms 60000}}
+                    :healthy {:exporter healthy
+                              :config {:schedule-delay-ms 60000}}))]
+    (try
+      (let [results (export/force-flush-pipelines! pipelines)]
+        (is (= {:ok? false :failure :threw} (:throwing results)))
+        (is (= {:ok? true} (:healthy results)))
+        (is (= 1 @healthy-flushes)
+            "a throwing destination cannot skip a later flush")
+        (is (not (.contains (pr-str results) "Authorization")))
+        (is (not (.contains (pr-str results) "secret"))))
+      (finally
+        (export/shutdown-pipelines! pipelines)))))
+
+(deftest batch-shutdown-closes-the-exporter-after-a-throwing-flush
+  (let [events (atom [])
+        exporter (reify export/SpanExporter
+                   (export-spans! [_ _] true)
+                   (flush-exporter! [_]
+                     (swap! events conj :flush)
+                     (throw (ex-info "secret Authorization header" {:token "secret"})))
+                   (shutdown-exporter! [_]
+                     (swap! events conj :shutdown)
+                     true))
+        processor (export/batch-processor exporter {:schedule-delay-ms 60000})]
+    (is (thrown? Exception (export/shutdown! processor)))
+    (is (= [:flush :shutdown] @events)
+        "flush failure cannot skip exporter cleanup")))
 
 (deftest provider-shutdown-flushes-and-stops
   (let [exporter (memory/exporter)

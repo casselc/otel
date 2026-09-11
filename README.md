@@ -153,6 +153,7 @@ so nothing sensitive belongs in it.
 | `:headers` | `OTEL_EXPORTER_OTLP_HEADERS` | none |
 | `:exporter` | — | `:otlp` (also `:console`, `:json`, `:none`, or an exporter instance) |
 | `:processor` | — | `:batch` (also `:simple`) |
+| `:span-processors` | — | optional replacement tracing processor sequence |
 | `:metrics?` / `:runtime-metrics?` | — | true |
 | `:metric-interval-ms` | — | 60000 |
 | `:logs?` / `:bridge-logging?` | — | false / true |
@@ -167,6 +168,56 @@ rather than a silent fall back to OTLP.
 
 Samplers, processors and exporters can also be built directly and passed to
 `otel.sdk.tracer/tracer-provider` when `init!` is too opinionated.
+
+### Independent span destinations
+
+One tracer provider can send the same canonical spans to several independently
+bounded destinations. `independent-batch-pipelines` composes the existing batch
+processor rather than adding another queue: each destination has its own worker,
+queue capacity, batch size, schedule, drop count and exporter lifecycle.
+
+```clojure
+(require '[otel.sdk.export :as export]
+         '[otel.sdk.tracer :as sdk-tracer])
+
+(def pipelines
+  (export/independent-batch-pipelines
+    {:local  {:exporter local-exporter
+              :config {:max-queue-size 2048}}
+     :remote {:exporter remote-exporter
+              :config {:max-queue-size 512
+                       :schedule-delay-ms 1000}}}))
+
+(def provider
+  (sdk-tracer/tracer-provider
+    {:processors [pipelines]}))
+
+;; Detailed lifecycle results retain the caller's destination names. Every
+;; destination is attempted even if an earlier one returns false or throws.
+(export/force-flush-pipelines! pipelines)
+;; => {:local {:ok? true}, :remote {:ok? true}}
+
+(export/shutdown-pipelines! pipelines)
+(export/pipeline-stats pipelines)
+;; => {:local {:queue-size 0 :dropped-count 0}, ...}
+```
+
+Ending a span only admits it independently to the bounded queues, so exporter
+latency in one destination does not enter the application path or stop another
+worker. A full destination queue drops only that destination's copy. Export,
+flush and shutdown callbacks run under generic instrumentation suppression to
+avoid recursively observing exporter work. The ordinary provider
+`force-flush!` and `shutdown!` methods still return one aggregate boolean; keep
+the `pipelines` value when per-destination results or queue diagnostics matter.
+Failed lifecycle results use only safe `:returned-false` or `:threw` markers;
+raw exporter exceptions are never returned because they may contain credentials.
+
+This primitive composes traces only. Logs and metrics keep their own explicit
+processor and reader configuration. Applications using the global SDK can pass
+`{:span-processors [pipelines]}` to `sdk/init!`; that replaces only its tracing
+processor sequence, and transfers lifecycle ownership of those processors to
+the returned SDK handle. The ordinary `:exporter` remains available to configure
+metric and log export independently.
 
 ## Runtime metrics
 

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add one-provider composition for named, independently bounded span pipelines,
+  reusing the existing batch processor per destination. Per-destination flush,
+  shutdown, queue and drop results preserve cleanup after failures, while the
+  same canonical span identity and parentage fan out without coupling exporter
+  latency or overflow. `init!` can own an explicit replacement span-processor
+  sequence without coupling it to log or metric routing. Span exporter callbacks
+  now run under generic instrumentation suppression. Lifecycle results redact
+  thrown exporter details, and batch shutdown still joins its worker and closes
+  its exporter after a failed flush.
 - Preserve representable log bodies as canonical AnyValues across direct SDK
   export and OTLP JSON relay, including keyword and symbol strings, maps,
   arrays, byte strings, and explicit empty values. Empty maps and arrays stay
