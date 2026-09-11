@@ -206,6 +206,59 @@
       (testing "no event time was set, so timeUnixNano is omitted rather than zero"
         (is (not (contains? r :timeUnixNano)))))))
 
+(deftest structured-and-empty-log-bodies-use-any-value-shapes
+  (let [{:keys [logger exporter]} (setup)
+        bodies ["" nil :ready 'phase/ready
+                any/empty-value (any/bytes [0 255]) {} []
+                {:event :joined :players [{:id 1 :ready true}]}]]
+    (doseq [body bodies]
+      (logs/emit! logger {:body body :severity :info}))
+    (logs/emit! logger {:severity :info})
+    (let [direct (vec (memory/records exporter))
+          wire (-> (enc/logs-request direct)
+                   :resourceLogs first :scopeLogs first :logRecords)
+          expected ["" "" "ready" "phase/ready"
+                    any/empty-value (any/bytes [0 255])
+                    (sorted-map) []
+                    (sorted-map "event" "joined"
+                                "players" [(sorted-map "id" 1 "ready" true)])
+                    ""]]
+      (is (= expected (mapv :body direct)))
+      (is (= [{:stringValue ""}
+              {:stringValue ""}
+              {:stringValue "ready"}
+              {:stringValue "phase/ready"}
+              {}
+              {:bytesValue "AP8="}
+              {:kvlistValue {:values []}}
+              {:arrayValue {:values []}}
+              {:kvlistValue
+               {:values
+                [{:key "event" :value {:stringValue "joined"}}
+                 {:key "players"
+                  :value {:arrayValue
+                          {:values
+                           [{:kvlistValue
+                             {:values
+                              [{:key "id" :value {:intValue "1"}}
+                               {:key "ready" :value {:boolValue true}}]}}]}}}]}}
+              {:stringValue ""}]
+             (mapv :body wire))))))
+
+(deftest malformed-and-out-of-range-log-bodies-use-readable-fallback
+  (let [{:keys [logger exporter]} (setup)
+        malformed {:a nil}
+        out-of-range (inc any/max-int64)]
+    (logs/emit! logger {:body malformed :severity :info})
+    (logs/emit! logger {:body out-of-range :severity :info})
+    (let [direct (vec (memory/records exporter))
+          wire (-> (enc/logs-request direct)
+                   :resourceLogs first :scopeLogs first :logRecords)]
+      (is (= [malformed out-of-range] (mapv :body direct)))
+      (is (= [{:stringValue (pr-str malformed)}
+              {:stringValue (pr-str out-of-range)}]
+             (mapv :body wire))))))
+
 (deftest encodes-correlation-ids
   (let [{:keys [logger exporter]} (setup)
         tp (sdk-tracer/tracer-provider {:resource res/empty-resource})

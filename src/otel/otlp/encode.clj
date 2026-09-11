@@ -14,7 +14,8 @@
   Spans are grouped resource -> scope -> spans, which is also the compression the
   format is designed around: the resource is written once per batch rather than
   once per span."
-  (:require [otel.otlp.any-value :as wire-any]
+  (:require [otel.any-value :as any]
+            [otel.otlp.any-value :as wire-any]
             [otel.resource :as res]))
 
 ;; --- primitives -------------------------------------------------------------
@@ -188,17 +189,16 @@
 ;; --- logs -------------------------------------------------------------------
 
 (defn- body-value
-  "A log record's body as an AnyValue. A string stays a string; anything else is
-  rendered, since a log body is meant to be read by a human and an arbitrary
-  Clojure value has no faithful AnyValue shape."
+  "A log record's body as an AnyValue. Every representable body retains its
+  canonical wire type. Unsupported or malformed values retain the legacy
+  readable fallback because they have no faithful AnyValue shape."
   [b]
-  (cond
-    (nil? b) {:stringValue ""}
-    (string? b) {:stringValue b}
-    (or (true? b) (false? b)) {:boolValue b}
-    (integer? b) {:intValue (i64 b)}
-    (float? b) {:doubleValue (double b)}
-    :else {:stringValue (pr-str b)}))
+  (if (nil? b)
+    {:stringValue ""}
+    (let [result (any/canonicalize b)]
+      (if (:error result)
+        {:stringValue (pr-str b)}
+        (wire-any/encode (:value result))))))
 
 (defn log-record->otlp
   "One SDK log record as an OTLP LogRecord."
