@@ -111,6 +111,15 @@
                     {:exporter exporter :kinds exporter-kinds})))
   exporter)
 
+(defn- check-span-processors
+  [processors]
+  (when (and (some? processors)
+             (or (not (sequential? processors))
+                 (not-every? #(satisfies? export/SpanProcessor %) processors)))
+    (throw (ex-info ":span-processors must be a sequence of span processors"
+                    {:otel.sdk/error :invalid-span-processors})))
+  processors)
+
 ;; An instance is used for whichever signals it actually implements; the others
 ;; get no exporter rather than quietly falling back to the network.
 (defn- build-span-exporter [exporter opts]
@@ -151,6 +160,8 @@
     :endpoint         OTLP base endpoint (OTEL_EXPORTER_OTLP_ENDPOINT)
     :headers          extra OTLP request headers
     :processor        :batch (default) or :simple
+    :span-processors  optional replacement tracing processor sequence; the SDK
+                      owns and shuts down every supplied processor
     :metrics?         collect metrics (default true)
     :runtime-metrics? register the Chez runtime instruments (default true)
     :metric-interval-ms  metric collection period (default 60000)
@@ -161,26 +172,32 @@
   Returns a handle for `shutdown!`. Honours OTEL_SDK_DISABLED=true by installing
   nothing, which is how the spec says to turn telemetry off without code changes."
   ([] (init! {}))
-  ([{:keys [service-name resource sampler exporter endpoint headers processor
+  ([{:keys [service-name resource sampler exporter endpoint headers processor span-processors
             metrics? runtime-metrics? metric-interval-ms logs? bridge-logging?]
      :or {exporter :otlp processor :batch metrics? true runtime-metrics? true
           logs? false bridge-logging? true}
      :as opts}]
    (check-exporter exporter)
+   (check-span-processors span-processors)
    (if (disabled?)
      {:disabled? true :terminal (lifecycle/terminal-action)}
      (let [base (res/merge-resources
                   (res/default-resource)
                   (cond-> (or resource res/empty-resource)
                     service-name (res/merge-resources (res/resource {:service.name service-name}))))
-           span-exporter (build-span-exporter exporter (select-keys opts [:endpoint :headers :traces-url :timeout-ms]))
-           processors (if span-exporter
-                        [(if (= :simple processor)
-                           (export/simple-processor span-exporter)
-                           (export/batch-processor span-exporter (select-keys opts [:schedule-delay-ms
-                                                                                    :max-queue-size
-                                                                                    :max-export-batch-size])))]
-                        [])
+           span-exporter (when-not (some? span-processors)
+                           (build-span-exporter exporter
+                                                (select-keys opts [:endpoint :headers :traces-url :timeout-ms])))
+           processors (if (some? span-processors)
+                        (vec span-processors)
+                        (if span-exporter
+                          [(if (= :simple processor)
+                             (export/simple-processor span-exporter)
+                             (export/batch-processor span-exporter
+                                                     (select-keys opts [:schedule-delay-ms
+                                                                        :max-queue-size
+                                                                        :max-export-batch-size])))]
+                          []))
            tp (sdk-tracer/tracer-provider {:resource base
                                            :sampler (or sampler (env-sampler) sampler/default-sampler)
                                            :processors processors

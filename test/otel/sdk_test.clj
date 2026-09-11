@@ -8,6 +8,7 @@
             [otel.metrics :as metrics]
             [otel.resource :as res]
             [otel.sdk :as sdk]
+            [otel.sdk.export :as export]
             [otel.sdk.metrics :as sdk-metrics]
             [otel.sdk.tracer :as sdk-tracer]
             [otel.trace :as trace]))
@@ -140,6 +141,28 @@
       (is (sdk/force-flush! handle))
       (is (= ["instance-span"] (mapv :name (mem/spans exp))))
       (finally (sdk/shutdown! handle)))))
+
+(deftest init-can-own-an-explicit-independent-span-pipeline
+  (let [local (mem/exporter)
+        remote (mem/exporter)
+        pipelines (export/independent-batch-pipelines
+                    {:local {:exporter local :config {:schedule-delay-ms 60000}}
+                     :remote {:exporter remote :config {:schedule-delay-ms 60000}}})
+        handle (sdk/init! {:exporter :none
+                           :span-processors [pipelines]
+                           :metrics? false})]
+    (trace/with-span [sp (sdk/tracer "s") "one-owner"])
+    (is (sdk/force-flush! handle))
+    (is (= ["one-owner"] (mapv :name (mem/spans local))))
+    (is (= (mem/spans local) (mem/spans remote)))
+    (is (sdk/shutdown! handle))
+    (is (= {:local {:ok? true} :remote {:ok? true}}
+           (export/shutdown-pipelines! pipelines)))))
+
+(deftest init-rejects-invalid-explicit-span-processors-before-installing
+  (is (thrown? Exception
+               (sdk/init! {:exporter :none :span-processors [::not-a-processor]})))
+  (is (nil? (sdk/tracer-provider))))
 
 (deftest a-span-only-exporter-instance-does-not-become-a-metric-exporter
   (let [exp (mem/exporter)
