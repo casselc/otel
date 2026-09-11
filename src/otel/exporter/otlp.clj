@@ -46,15 +46,28 @@
 
 (defn- env [k] (jolt.host/getenv k))
 
+(defn- environment-enabled?
+  [{:keys [environment?] :as opts}]
+  (if (contains? opts :environment?)
+    (if (or (true? environment?) (false? environment?))
+      environment?
+      (throw (ex-info ":environment? must be true or false"
+                      {:otel.exporter.otlp/error :invalid-option
+                       :option :environment?})))
+    true))
+
 (defn traces-endpoint
   "Resolve the traces URL. A signal-specific endpoint is used verbatim; a base
   endpoint gets /v1/traces appended, which is what the spec requires and a
   frequent source of confusion when configuring collectors."
-  [{:keys [endpoint traces-url]}]
-  (or traces-url
-      (env "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
-      (let [base (or endpoint (env "OTEL_EXPORTER_OTLP_ENDPOINT") default-endpoint)]
-        (str (str/replace base #"/+$" "") traces-path))))
+  [{:keys [endpoint traces-url] :as opts}]
+  (let [environment? (environment-enabled? opts)]
+    (or traces-url
+        (when environment? (env "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"))
+        (let [base (or endpoint
+                       (when environment? (env "OTEL_EXPORTER_OTLP_ENDPOINT"))
+                       default-endpoint)]
+          (str (str/replace base #"/+$" "") traces-path)))))
 
 (defn- backoff-ms
   "Exponential backoff with the collector's Retry-After taking precedence."
@@ -116,23 +129,30 @@
 (defn exporter
   "An OTLP/HTTP span exporter.
 
-  Options (all optional; each falls back to its OTEL_* environment variable):
+  Options (all optional; configuration falls back to OTEL_* by default):
     :endpoint     base URL, e.g. \"http://collector:4318\"
     :traces-url   full traces URL, overriding :endpoint
     :headers      map of extra request headers
     :timeout-ms   per-request timeout (default 10000)
     :max-retries  retryable-failure attempts after the first (default 3)
-    :insecure?    skip TLS certificate verification (self-signed collector certs)"
+    :insecure?    skip TLS certificate verification (self-signed collector certs)
+    :environment? read OTEL_EXPORTER_OTLP_* variables (default true); false
+                  makes endpoint, headers, and timeout fully explicit/defaulted"
   ([] (exporter {}))
   ([{:keys [headers timeout-ms max-retries insecure?] :as opts}]
-   (let [url (traces-endpoint opts)]
+   (let [environment? (environment-enabled? opts)
+         url (traces-endpoint opts)]
      (when-not (http/supports-scheme? url)
        (throw (ex-info (str "otel: the OTLP endpoint must be http:// or https://, got " url)
                        {:url url})))
      (->OtlpHttpExporter url
-                         (merge (parse-headers (env "OTEL_EXPORTER_OTLP_HEADERS")) headers)
+                         (merge {}
+                                (when environment?
+                                  (parse-headers (env "OTEL_EXPORTER_OTLP_HEADERS")))
+                                headers)
                          (or timeout-ms
-                             (some-> (env "OTEL_EXPORTER_OTLP_TIMEOUT") str/trim Long/parseLong)
+                             (when environment?
+                               (some-> (env "OTEL_EXPORTER_OTLP_TIMEOUT") str/trim Long/parseLong))
                              10000)
                          (or max-retries 3)
                          (boolean insecure?)
@@ -144,11 +164,14 @@
 
 (defn metrics-endpoint
   "Resolve the metrics URL, on the same base/signal-specific rules as traces."
-  [{:keys [endpoint metrics-url]}]
-  (or metrics-url
-      (env "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")
-      (let [base (or endpoint (env "OTEL_EXPORTER_OTLP_ENDPOINT") default-endpoint)]
-        (str (str/replace base #"/+$" "") metrics-path))))
+  [{:keys [endpoint metrics-url] :as opts}]
+  (let [environment? (environment-enabled? opts)]
+    (or metrics-url
+        (when environment? (env "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"))
+        (let [base (or endpoint
+                       (when environment? (env "OTEL_EXPORTER_OTLP_ENDPOINT"))
+                       default-endpoint)]
+          (str (str/replace base #"/+$" "") metrics-path)))))
 
 (defrecord OtlpHttpMetricExporter [url headers timeout-ms max-retries insecure? state]
   export/MetricExporter
@@ -182,14 +205,19 @@
   place of :traces-url."
   ([] (metric-exporter {}))
   ([{:keys [headers timeout-ms max-retries insecure?] :as opts}]
-   (let [url (metrics-endpoint opts)]
+   (let [environment? (environment-enabled? opts)
+         url (metrics-endpoint opts)]
      (when-not (http/supports-scheme? url)
        (throw (ex-info (str "otel: the OTLP endpoint must be http:// or https://, got " url)
                        {:url url})))
      (->OtlpHttpMetricExporter url
-                               (merge (parse-headers (env "OTEL_EXPORTER_OTLP_HEADERS")) headers)
+                               (merge {}
+                                      (when environment?
+                                        (parse-headers (env "OTEL_EXPORTER_OTLP_HEADERS")))
+                                      headers)
                                (or timeout-ms
-                                   (some-> (env "OTEL_EXPORTER_OTLP_TIMEOUT") str/trim Long/parseLong)
+                                   (when environment?
+                                     (some-> (env "OTEL_EXPORTER_OTLP_TIMEOUT") str/trim Long/parseLong))
                                    10000)
                                (or max-retries 3)
                                (boolean insecure?)
@@ -201,11 +229,14 @@
 
 (defn logs-endpoint
   "Resolve the logs URL, on the same base/signal-specific rules as traces."
-  [{:keys [endpoint logs-url]}]
-  (or logs-url
-      (env "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")
-      (let [base (or endpoint (env "OTEL_EXPORTER_OTLP_ENDPOINT") default-endpoint)]
-        (str (str/replace base #"/+$" "") logs-path))))
+  [{:keys [endpoint logs-url] :as opts}]
+  (let [environment? (environment-enabled? opts)]
+    (or logs-url
+        (when environment? (env "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"))
+        (let [base (or endpoint
+                       (when environment? (env "OTEL_EXPORTER_OTLP_ENDPOINT"))
+                       default-endpoint)]
+          (str (str/replace base #"/+$" "") logs-path)))))
 
 (defrecord OtlpHttpLogExporter [url headers timeout-ms max-retries insecure? state]
   sdk-logs/LogRecordExporter
@@ -239,14 +270,19 @@
   in place of :traces-url."
   ([] (log-exporter {}))
   ([{:keys [headers timeout-ms max-retries insecure?] :as opts}]
-   (let [url (logs-endpoint opts)]
+   (let [environment? (environment-enabled? opts)
+         url (logs-endpoint opts)]
      (when-not (http/supports-scheme? url)
        (throw (ex-info (str "otel: the OTLP endpoint must be http:// or https://, got " url)
                        {:url url})))
      (->OtlpHttpLogExporter url
-                            (merge (parse-headers (env "OTEL_EXPORTER_OTLP_HEADERS")) headers)
+                            (merge {}
+                                   (when environment?
+                                     (parse-headers (env "OTEL_EXPORTER_OTLP_HEADERS")))
+                                   headers)
                             (or timeout-ms
-                                (some-> (env "OTEL_EXPORTER_OTLP_TIMEOUT") str/trim Long/parseLong)
+                                (when environment?
+                                  (some-> (env "OTEL_EXPORTER_OTLP_TIMEOUT") str/trim Long/parseLong))
                                 10000)
                             (or max-retries 3)
                             (boolean insecure?)

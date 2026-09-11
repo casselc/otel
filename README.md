@@ -169,6 +169,14 @@ rather than a silent fall back to OTLP.
 Samplers, processors and exporters can also be built directly and passed to
 `otel.sdk.tracer/tracer-provider` when `init!` is too opinionated.
 
+The direct OTLP span, metric, and log exporter constructors accept
+`:environment? false` for closed configuration. In that mode they do not read
+any `OTEL_EXPORTER_OTLP_*` endpoint, signal-endpoint, header, or timeout
+variables: supplied options win without ambient headers being added, and
+omitted values use the library defaults. Omitting `:environment?` (or setting it
+to `true`) retains the standard environment-aware behavior. The option must be
+a boolean when present.
+
 ### Independent span destinations
 
 One tracer provider can send the same canonical spans to several independently

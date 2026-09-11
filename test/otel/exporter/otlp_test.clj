@@ -38,6 +38,78 @@
     (is (= "http://c/custom"
            (otlp/traces-endpoint {:endpoint "http://collector:4318" :traces-url "http://c/custom"})))))
 
+(deftest environment-configuration-can-be-closed
+  (let [ambient {"OTEL_EXPORTER_OTLP_ENDPOINT" "http://ambient-base:4318"
+                 "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" "http://ambient-traces/custom"
+                 "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT" "http://ambient-metrics/custom"
+                 "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT" "http://ambient-logs/custom"
+                 "OTEL_EXPORTER_OTLP_HEADERS" "ambient=yes,shared=ambient"
+                 "OTEL_EXPORTER_OTLP_TIMEOUT" "2468"}
+        reads (atom [])]
+    (with-redefs [jolt.host/getenv (fn [name]
+                                     (swap! reads conj name)
+                                     (get ambient name))]
+      (testing "the backwards-compatible default honors signal URLs, headers, and timeout"
+        (let [span (otlp/exporter {:endpoint "http://explicit-base:4318"
+                                   :headers {"explicit" "yes" "shared" "explicit"}})
+              metric (otlp/metric-exporter {})
+              log (otlp/log-exporter {})]
+          (is (= "http://ambient-traces/custom" (:url span)))
+          (is (= "http://ambient-metrics/custom" (:url metric)))
+          (is (= "http://ambient-logs/custom" (:url log)))
+          (is (= {"ambient" "yes" "explicit" "yes" "shared" "explicit"}
+                 (:headers span)))
+          (is (= 2468 (:timeout-ms span)))
+          (is (= 2468 (:timeout-ms metric)))
+          (is (= 2468 (:timeout-ms log)))
+          (is (= "http://ambient-traces/custom"
+                 (otlp/traces-endpoint {:environment? true})))
+          (is (seq @reads))))
+      (reset! reads [])
+      (testing "false ignores base and signal URLs and does not supplement explicit settings"
+        (let [common {:environment? false
+                      :endpoint "http://explicit-base:4318"
+                      :headers {"explicit" "yes"}
+                      :timeout-ms 1357}
+              span (otlp/exporter common)
+              metric (otlp/metric-exporter common)
+              log (otlp/log-exporter common)]
+          (is (= "http://explicit-base:4318/v1/traces" (:url span)))
+          (is (= "http://explicit-base:4318/v1/metrics" (:url metric)))
+          (is (= "http://explicit-base:4318/v1/logs" (:url log)))
+          (is (= {"explicit" "yes"} (:headers span) (:headers metric) (:headers log)))
+          (is (= 1357 (:timeout-ms span) (:timeout-ms metric) (:timeout-ms log)))))
+      (testing "false also closes resolvers and uses library defaults when explicit values are absent"
+        (is (= "http://localhost:4318/v1/traces"
+               (otlp/traces-endpoint {:environment? false})))
+        (is (= "http://localhost:4318/v1/metrics"
+               (otlp/metrics-endpoint {:environment? false})))
+        (is (= "http://localhost:4318/v1/logs"
+               (otlp/logs-endpoint {:environment? false})))
+        (let [span (otlp/exporter {:environment? false})]
+          (is (= {} (:headers span)))
+          (is (= 10000 (:timeout-ms span)))))
+      (is (empty? @reads)
+          "closed configuration must not read ambient OTLP variables"))))
+
+(deftest ambient-base-endpoint-remains-the-default
+  (with-redefs [jolt.host/getenv #(get {"OTEL_EXPORTER_OTLP_ENDPOINT"
+                                        "http://ambient-base:4318"} %)]
+    (is (= "http://ambient-base:4318/v1/traces" (:url (otlp/exporter {}))))
+    (is (= "http://ambient-base:4318/v1/metrics" (:url (otlp/metric-exporter {}))))
+    (is (= "http://ambient-base:4318/v1/logs" (:url (otlp/log-exporter {}))))))
+
+(deftest environment-option-must-be-boolean
+  (doseq [construct [(fn [] (otlp/traces-endpoint {:environment? nil}))
+                     (fn [] (otlp/metrics-endpoint {:environment? :no}))
+                     (fn [] (otlp/logs-endpoint {:environment? 0}))
+                     (fn [] (otlp/exporter {:environment? "false"}))
+                     (fn [] (otlp/metric-exporter {:environment? []}))
+                     (fn [] (otlp/log-exporter {:environment? {}}))]]
+    (let [error (try (construct) nil (catch Exception error error))]
+      (is (= :invalid-option (:otel.exporter.otlp/error (ex-data error))))
+      (is (= :environment? (:option (ex-data error)))))))
+
 (deftest parses-header-config
   (is (= {"api-key" "secret"} (otlp/parse-headers "api-key=secret")))
   (is (= {"a" "1" "b" "2"} (otlp/parse-headers "a=1,b=2")))
