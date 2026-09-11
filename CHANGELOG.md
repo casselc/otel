@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add strict `:environment? false` closed configuration to the OTLP/HTTP span,
+  metric, and log exporters. Closed exporters ignore ambient OTLP base and
+  signal endpoints, headers, and timeout, while the default remains compatible
+  with the standard environment-aware behavior.
 - Add one-provider composition for named, independently bounded span pipelines,
   reusing the existing batch processor per destination. Per-destination flush,
   shutdown, queue and drop results preserve cleanup after failures, while the
