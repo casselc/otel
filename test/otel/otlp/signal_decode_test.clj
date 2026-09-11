@@ -37,13 +37,29 @@
                 provider
                 {:name "roundtrip" :version "1"
                  :attributes {"scope.integer" 42}})
-        bodies ["text" false 42 any/min-int64 any/max-int64 1.5]
+        inputs ["text" false 42 any/min-int64 any/max-int64 1.5
+                :ready 'phase/ready
+                "" nil any/empty-value (any/bytes [0 255]) {} []
+                {:event :joined
+                 :players [{:id 1 :ready true}
+                           {:id 2 :ready false}]
+                 :metadata {:rounds [1 2 any/empty-value]}}]
+        canonical-bodies ["text" false 42 any/min-int64 any/max-int64 1.5
+                          "ready" "phase/ready"
+                          "" "" any/empty-value (any/bytes [0 255])
+                          (sorted-map) []
+                          (sorted-map
+                           "event" "joined"
+                           "metadata" (sorted-map
+                                       "rounds" [1 2 any/empty-value])
+                           "players" [(sorted-map "id" 1 "ready" true)
+                                      (sorted-map "id" 2 "ready" false)])]
         correlated-context
         (trace/span-context
          {:trace-id "10000000000000000000000000000000"
           :span-id "2000000000000000"
           :trace-flags 0})]
-    (doseq [body bodies]
+    (doseq [body inputs]
       (logs/emit! logger {:body body :severity :info
                           :attributes typed-attributes}))
     (trace/with-current-span (trace/non-recording-span correlated-context)
@@ -57,7 +73,8 @@
       (is (zero? (:rejected-log-records result)))
       (is (empty? (:errors result)))
       (is (= direct relayed))
-      (is (= (conj bodies "correlated") (mapv :body relayed)))
+      (is (= (conj canonical-bodies "correlated") (mapv :body direct)))
+      (is (= (conj canonical-bodies "correlated") (mapv :body relayed)))
       (is (= typed-attributes (:attributes (first relayed))))
       (is (not (contains? (:attributes (first relayed)) "absent")))
       (doseq [value [(:resource (first relayed)) (:scope (first relayed))

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Preserve representable log bodies as canonical AnyValues across direct SDK
+  export and OTLP JSON relay, including keyword and symbol strings, maps,
+  arrays, byte strings, and explicit empty values. Empty maps and arrays stay
+  distinct from empty strings and explicit empty values, while nil or omitted
+  bodies retain the established empty-string behavior and malformed or
+  unsupported values retain their readable compatibility fallback.
 - Bound discovery EDN to a conservative shared budget of 64 open delimiters and
   discard prefixes before recursive parsing, rejecting core-only reader macros
   and tagged values while preserving sets and namespaced maps. Also enforce

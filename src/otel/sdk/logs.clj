@@ -10,7 +10,8 @@
   record picks up the active span's trace and span ids as it is created. Doing it
   later would be too late, because by the time a batch is exported the span that
   gave the record its meaning is long out of scope."
-  (:require [otel.attributes :as attr]
+  (:require [otel.any-value :as any]
+            [otel.attributes :as attr]
             [otel.logs :as api]
             [otel.resource :as res]
             [otel.sdk.clock :as clock]
@@ -21,6 +22,17 @@
 (def default-limits
   {:attribute-count-limit 128
    :attribute-value-length-limit nil})
+
+(defn- canonical-body
+  "Put every representable body into the same immutable AnyValue form used by
+  the OTLP decoder. Nil retains the established empty-string export behavior.
+  Unsupported or malformed values remain untouched for the legacy readable
+  fallback in the encoder."
+  [body]
+  (if (nil? body)
+    ""
+    (let [result (any/canonicalize body)]
+      (if (:error result) body (:value result)))))
 
 (defprotocol LogRecordExporter
   (export-logs! [exporter records]
@@ -143,7 +155,7 @@
                                 :value-length-limit (:attribute-value-length-limit limits)})]
           (export/on-end
             processor
-            (cond-> {:body (:body record)
+            (cond-> {:body (canonical-body (:body record))
                      :event-name (:event-name record)
                      :severity-number (or (:severity-number record) (api/severity-number level))
                      :severity-text (or (:severity-text record) (api/severity-text level))

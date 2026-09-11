@@ -69,7 +69,14 @@ can call `otel.attributes/normalize-result` to receive the canonical attributes,
 dropped and truncated counts, and at most sixteen structured errors.
 
 The shared `otel.otlp.any-value` codec is used by trace, log and metric receiver
-paths and by attribute encoding. OTLP special double spellings (`NaN`,
+paths, attribute encoding, and representable log bodies. Scalars, maps,
+sequential collections, byte strings and `empty-value` log bodies are
+canonicalized when they enter the SDK, so direct exporters and an OTLP relay see
+the same immutable value. Empty maps and arrays remain structurally distinct
+from an empty string and from `empty-value`. For compatibility, a nil or omitted
+application body retains the established empty-string export behavior.
+
+OTLP special double spellings (`NaN`,
 `Infinity`, and `-Infinity`) and base64 byte strings round-trip without a
 string fallback. Log bodies retain their older human-readable fallback for
 arbitrary Clojure objects; this contract applies to attribute collections.
@@ -80,9 +87,9 @@ every value arm above and the absent-key distinction. Default-zero dropped
 counts on resources, scopes, events, and links stay absent in both records;
 positive counts remain explicit and survive the wire path.
 
-Equivalent focused fixtures cover SDK-ended logs with representable scalar
-bodies and SDK gauge, sum, and explicit-histogram collections. Their attribute
-maps use this complete value algebra. The record-level qualification in
+Equivalent focused fixtures cover SDK-ended logs with representable scalar and
+structured bodies and SDK gauge, sum, and explicit-histogram collections. Their
+attribute maps use this complete value algebra. The record-level qualification in
 `receiver.md` documents fields outside exact log or metric equality; those
 limitations do not cause attribute values to be stringified or inferred.
 

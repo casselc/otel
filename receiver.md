@@ -40,13 +40,17 @@ Absent correlation fields and gauge start times remain absent, and default-zero
 dropped counts remain absent from resources, scopes, and logs. Positive wire
 dropped counts remain explicit.
 
-This is not a universal round-trip claim. A nil log body becomes an empty string,
-and structured or otherwise unsupported log bodies use the documented readable
-string fallback. Metric values outside signed int64, non-finite values, and
-integer histogram boundaries are outside exact record equality: OTLP constrains
-integer points and represents bounds as doubles. Exemplars, non-zero point flags,
-and point dropped-attribute counts are not modeled by this SDK and remain
-explicit receiver rejections rather than invented defaults.
+This is not a universal round-trip claim. A nil or omitted application log body
+retains the established empty-string representation. Representable log bodies
+use the canonical AnyValue scalar, map, array, byte and explicit-empty arms;
+arbitrary host objects, malformed values, and integers outside signed int64
+retain the documented readable string fallback for compatibility. Metric
+values outside signed int64,
+non-finite values, and integer histogram boundaries are outside exact record
+equality: OTLP constrains integer points and represents bounds as doubles.
+Exemplars, non-zero point flags, and point dropped-attribute counts are not
+modeled by this SDK and remain explicit receiver rejections rather than invented
+defaults.
 
 Neither namespace is an HTTP server or JSON parser. The complete receiver
 stack owns, in this order:
