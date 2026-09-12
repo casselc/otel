@@ -40,6 +40,18 @@
   (flush-exporter! [_] true)
   (shutdown-exporter! [_] true))
 
+(defrecord FailingBlockingSpanExporter [entered release]
+  export/SpanExporter
+  (export-spans! [_ _]
+    ;; Return false only after the worker has removed this batch from its queue.
+    (deliver entered true)
+    @release
+    false)
+  ;; This intentionally matches the stateless OTLP exporter. The processor,
+  ;; rather than a fabricated exporter flush failure, must retain the result.
+  (flush-exporter! [_] true)
+  (shutdown-exporter! [_] true))
+
 (defrecord LifecycleSpanExporter [events fail-flush? throw-shutdown?]
   export/SpanExporter
   (export-spans! [_ _]
@@ -536,6 +548,59 @@
           "only the remote bounded queue overflows")
       (is (zero? (get-in (export/pipeline-stats pipelines)
                          [:local :dropped-count])))
+      (finally
+        (deliver release true)
+        (sdk/shutdown! provider)))))
+
+(deftest background-export-failure-remains-visible-at-lifecycle-barriers
+  (let [entered (promise)
+        release (promise)
+        remote (->FailingBlockingSpanExporter entered release)
+        local (memory/exporter)
+        pipelines (export/independent-batch-pipelines
+                   {:remote {:exporter remote
+                             :config {:schedule-delay-ms 1
+                                      :max-queue-size 2
+                                      :max-export-batch-size 1}}
+                    :local {:exporter local
+                            :config {:schedule-delay-ms 1}}})
+        provider (sdk/tracer-provider {:processors [pipelines]
+                                       :resource res/empty-resource})
+        tracer (sdk/get-tracer provider {:name "s"})]
+    (try
+      (trace/with-span [sp tracer "first"])
+      (is (= true (deref entered 2000 ::timeout))
+          "the remote worker owns a dequeued batch before it fails")
+      (dotimes [index 10]
+        (trace/with-span [sp tracer (str "local-" index)]))
+      (is (await! #(= 11 (count (memory/spans local))) 2000)
+          "the healthy destination exports while the remote worker is blocked")
+      (is (zero? (get-in (export/pipeline-stats pipelines)
+                         [:local :dropped-count])))
+      (is (= 8 (get-in (export/pipeline-stats pipelines)
+                       [:remote :dropped-count]))
+          "only the two available remote queue slots accept later spans")
+      (deliver release true)
+      (is (= {:remote {:ok? false :failure :returned-false}
+              :local {:ok? true}}
+             (export/force-flush-pipelines! pipelines))
+          "stateless exporter flush cannot erase prior background failure")
+      (is (= {:queue-size 0
+              :attempted-span-count 3
+              :exported-span-count 0
+              :failed-span-count 3
+              :dropped-count 8}
+             (:remote (export/pipeline-stats pipelines))))
+      (is (= {:queue-size 0
+              :attempted-span-count 11
+              :exported-span-count 11
+              :failed-span-count 0
+              :dropped-count 0}
+             (:local (export/pipeline-stats pipelines))))
+      (is (= {:remote {:ok? false :failure :returned-false}
+              :local {:ok? true}}
+             (export/shutdown-pipelines! pipelines))
+          "shutdown keeps named lifetime failure evidence and attempts both")
       (finally
         (deliver release true)
         (sdk/shutdown! provider)))))

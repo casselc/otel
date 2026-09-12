@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Retain bounded scalar delivery counts for batch span processors so a failed
+  background export remains visible through later per-destination force-flush
+  and shutdown results. Healthy pipelines continue independently, and no
+  exporter exception or transport content is retained.
+
 - Add strict `:environment? false` closed configuration to the OTLP/HTTP span,
   metric, and log exporters. Closed exporters ignore ambient OTLP base and
   signal endpoints, headers, and timeout, while the default remains compatible
