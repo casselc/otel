@@ -207,7 +207,11 @@ queue capacity, batch size, schedule, drop count and exporter lifecycle.
 
 (export/shutdown-pipelines! pipelines)
 (export/pipeline-stats pipelines)
-;; => {:local {:queue-size 0 :dropped-count 0}, ...}
+;; => {:local {:queue-size 0
+;;             :attempted-span-count 1
+;;             :exported-span-count 1
+;;             :failed-span-count 0
+;;             :dropped-count 0}, ...}
 ```
 
 Ending a span only admits it independently to the bounded queues, so exporter
@@ -219,6 +223,13 @@ avoid recursively observing exporter work. The ordinary provider
 the `pipelines` value when per-destination results or queue diagnostics matter.
 Failed lifecycle results use only safe `:returned-false` or `:threw` markers;
 raw exporter exceptions are never returned because they may contain credentials.
+Background export failures are retained as scalar processor-lifetime counts, so
+a stateless exporter's later successful flush cannot erase a failed batch from
+named force-flush or shutdown results. `pipeline-stats` exposes attempted,
+exported, failed, and dropped span counts without retaining exporter values,
+throwables, response bodies, endpoints, headers, or payloads. This lifetime
+window is deliberately conservative: once a processor loses an accepted span,
+later lifecycle barriers for that processor continue to report failure.
 
 This primitive composes traces only. Logs and metrics keep their own explicit
 processor and reader configuration. Applications using the global SDK can pass

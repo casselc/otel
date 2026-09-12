@@ -112,13 +112,25 @@
     (subvec (:queue old) 0 (- (count (:queue old)) (count (:queue new))))))
 
 (defn- drain!
-  "Export everything currently queued, in batches of at most `batch-size`."
+  "Export everything queued and retain scalar delivery evidence for its owner."
   [exporter state batch-size]
   (loop [ok true]
     (let [batch (take-batch! state batch-size)]
       (if (empty? batch)
         ok
-        (recur (and (export-quietly! exporter batch) ok))))))
+        (let [exported? (boolean (export-quietly! exporter batch))
+              span-count (count batch)]
+          ;; Retain only scalar counts. Exporter failures can carry endpoints,
+          ;; headers, response bodies, or payloads and must never enter state.
+          (swap! state
+                 (fn [current]
+                   (-> current
+                       (update :attempted-span-count + span-count)
+                       (update (if exported?
+                                 :exported-span-count
+                                 :failed-span-count)
+                               + span-count))))
+          (recur (and exported? ok)))))))
 
 (def ^:private shutdown-poll-ms
   "How often the worker checks for shutdown while waiting out its export interval.
@@ -156,8 +168,12 @@
     ;; not sufficient. Using the atom object only as a monitor still leaves its
     ;; lock-free swap path available to nonblocking producers.
     (locking state
-      (boolean (and (drain! exporter state (:max-export-batch-size config))
-                    (flush-exporter-suppressed! exporter)))))
+      (let [drained? (drain! exporter state (:max-export-batch-size config))
+            ;; Do not short-circuit exporter flush after a failed drain. The
+            ;; callback may own buffered resources even when this batch failed.
+            flushed? (flush-exporter-suppressed! exporter)
+            no-lifetime-failures? (zero? (:failed-span-count @state))]
+        (boolean (and drained? flushed? no-lifetime-failures?)))))
   (shutdown! [this]
     (lifecycle/run-terminal!
       terminal
@@ -201,6 +217,21 @@
   [processor]
   (count (:queue @(:state processor))))
 
+(defn batch-processor-stats
+  "Return bounded scalar delivery evidence for one batch span processor.
+
+  Export and failure counts cover the processor lifetime. A failed background
+  export therefore remains visible to every later force-flush and shutdown
+  barrier. No exporter value, throwable, message, or transport content is
+  retained."
+  [processor]
+  (let [state @(:state processor)]
+    {:queue-size (count (:queue state))
+     :attempted-span-count (:attempted-span-count state)
+     :exported-span-count (:exported-span-count state)
+     :failed-span-count (:failed-span-count state)
+     :dropped-count (:dropped state)}))
+
 (defn batch-processor
   "Queue ended spans and export them from a background thread.
 
@@ -209,7 +240,10 @@
   ([exporter] (batch-processor exporter {}))
   ([exporter opts]
    (let [config (checked-batch-config opts)
-         state (atom {:queue [] :dropped 0 :shutdown? false})
+         state (atom {:queue [] :dropped 0 :shutdown? false
+                      :attempted-span-count 0
+                      :exported-span-count 0
+                      :failed-span-count 0})
          worker (Thread.
                   (fn []
                     (loop []
@@ -360,12 +394,11 @@
     #(pipeline-results (:pipelines pipelines) shutdown!)))
 
 (defn pipeline-stats
-  "Return bounded-queue diagnostics keyed by destination name."
+  "Return bounded scalar queue and lifetime delivery diagnostics by destination."
   [pipelines]
   (into {}
         (map (fn [[destination processor]]
-               [destination {:queue-size (queue-size processor)
-                             :dropped-count (dropped-count processor)}]))
+               [destination (batch-processor-stats processor)]))
         (:pipelines pipelines)))
 
 ;; --- metrics ----------------------------------------------------------------
