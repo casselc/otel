@@ -122,6 +122,27 @@
     (swap! shutdown-calls inc)
     true))
 
+(defn- swallow-interrupt-and-succeed! [entered]
+  (deliver entered true)
+  (try
+    (Thread/sleep 10000)
+    (catch :default _ true))
+  true)
+
+(defrecord TruthyAfterInterruptExporter [entered shutdown-calls]
+  export/SpanExporter
+  (export-spans! [_ _] (swallow-interrupt-and-succeed! entered))
+  (flush-exporter! [_] true)
+  (shutdown-exporter! [_] (swap! shutdown-calls inc) true)
+
+  sdk-logs/LogRecordExporter
+  (export-logs! [_ _] (swallow-interrupt-and-succeed! entered))
+  (shutdown-log-exporter! [_] (swap! shutdown-calls inc) true)
+
+  export/MetricExporter
+  (export-metrics! [_ _ _] (swallow-interrupt-and-succeed! entered))
+  (shutdown-metric-exporter! [_] (swap! shutdown-calls inc) true))
+
 (defn- named-processor [pipelines destination]
   (some (fn [[name processor]]
           (when (= destination name) processor))
@@ -351,5 +372,79 @@
         (deliver release true)
         (.interrupt shutdown-thread)
         (.join shutdown-thread 2000)
+        (try (export/shutdown! reader) (catch Throwable _ nil))
+        (try (sdk-metrics/shutdown! provider) (catch Throwable _ nil))))))
+
+(deftest a-truthy-span-exporter-cannot-mask-owned-cancellation
+  (let [entered (promise)
+        shutdowns (atom 0)
+        exporter (->TruthyAfterInterruptExporter entered shutdowns)
+        processor (export/batch-processor exporter {:schedule-delay-ms 1})
+        provider (sdk-tracer/tracer-provider
+                  {:resource resource/empty-resource :processors [processor]})
+        tracer (sdk-tracer/get-tracer provider {:name "truthy.span"})
+        result (promise)
+        thread (Thread. #(deliver result (export/shutdown! processor)))]
+    (try
+      (trace/with-span [span tracer "blocked"])
+      (is (= true (deref entered 3000 ::not-entered)))
+      (.start thread)
+      (is (false? (deref result 3000 ::still-blocked)))
+      (is (:shutdown-cancelled? @(:state processor)))
+      (is (= 1 (:worker-interrupt-count @(:state processor))))
+      (is (= 1 @shutdowns))
+      (finally
+        (.interrupt thread)
+        (.join thread 2000)
+        (try (sdk-tracer/shutdown! provider) (catch Throwable _ nil))))))
+
+(deftest a-truthy-log-exporter-cannot-mask-owned-cancellation
+  (let [entered (promise)
+        shutdowns (atom 0)
+        exporter (->TruthyAfterInterruptExporter entered shutdowns)
+        processor (sdk-logs/batch-processor
+                   exporter {:schedule-delay-ms 1
+                             :max-export-batch-size 1})
+        provider (sdk-logs/logger-provider
+                  {:resource resource/empty-resource :processors [processor]})
+        logger (sdk-logs/get-logger provider {:name "truthy.log"})
+        result (promise)
+        thread (Thread. #(deliver result (export/shutdown! processor)))]
+    (try
+      (log-api/emit! logger {:body "blocked" :severity :info})
+      (is (= true (deref entered 3000 ::not-entered)))
+      (log-api/emit! logger {:body "queued" :severity :info})
+      (.start thread)
+      (is (false? (deref result 3000 ::still-blocked)))
+      (is (:shutdown-cancelled? @(:state processor)))
+      (is (= 1 (:worker-interrupt-count @(:state processor))))
+      (is (empty? (:queue @(:state processor))))
+      (is (= 1 @shutdowns))
+      (finally
+        (.interrupt thread)
+        (.join thread 2000)
+        (try (sdk-logs/shutdown! provider) (catch Throwable _ nil))))))
+
+(deftest a-truthy-metric-exporter-cannot-mask-owned-cancellation
+  (let [entered (promise)
+        shutdowns (atom 0)
+        exporter (->TruthyAfterInterruptExporter entered shutdowns)
+        provider (sdk-metrics/meter-provider {:resource resource/empty-resource})
+        meter (sdk-metrics/get-meter provider {:name "truthy.metric"})
+        counter (metric-api/counter meter "requests")
+        reader (sdk-metrics/periodic-reader provider exporter {:interval-ms 1})
+        result (promise)
+        thread (Thread. #(deliver result (export/shutdown! reader)))]
+    (try
+      (metric-api/add! counter 1)
+      (is (= true (deref entered 3000 ::not-entered)))
+      (.start thread)
+      (is (false? (deref result 3000 ::still-blocked)))
+      (is (:shutdown-cancelled? @(:state reader)))
+      (is (= 1 (:worker-interrupt-count @(:state reader))))
+      (is (= 1 @shutdowns))
+      (finally
+        (.interrupt thread)
+        (.join thread 2000)
         (try (export/shutdown! reader) (catch Throwable _ nil))
         (try (sdk-metrics/shutdown! provider) (catch Throwable _ nil))))))

@@ -101,6 +101,8 @@ operation. Other batch pipelines likewise start no new export.
 Force-flush is deliberately outside that cancellation transition and retains
 transport timeout semantics. Real stalled-socket companion tests cover the
 signal-specific span, log, and metric result propagation omitted by this model.
+Truthy-after-interrupt exporter controls enforce the runtime policy that a sent
+owned interrupt is an ambiguous delivery and therefore a failed destination.
 The metric scheduled-snapshot/retirement race is likewise a runtime-layer
 collection boundary and is covered by a deterministic exporter barrier test,
 not by the signal-agnostic lifecycle abstraction below.

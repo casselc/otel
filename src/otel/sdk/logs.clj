@@ -129,7 +129,8 @@
         (let [flushed? (export/force-flush! this)
               close-value (shutdown-log-exporter! exporter)]
           (if (and (boolean flushed?)
-                   (not (:worker-export-failed? @state)))
+                   (not (:worker-export-failed? @state))
+                   (not (:shutdown-cancelled? @state)))
             close-value
             false))))))
 

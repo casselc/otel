@@ -317,7 +317,10 @@
         (swap! state assoc :shutdown? true)
         (lifecycle/await-owned-worker! worker state)
         (let [close-value (export/shutdown-metric-exporter! exporter)]
-          (if (:worker-export-failed? @state) false close-value))))))
+          (if (or (:worker-export-failed? @state)
+                  (:shutdown-cancelled? @state))
+            false
+            close-value))))))
 
 (defn periodic-reader
   "Collect every instrument on an interval and hand the result to `exporter`.

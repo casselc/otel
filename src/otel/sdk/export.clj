@@ -231,7 +231,8 @@
             ;; Preserve the exporter's successful shutdown value for existing
             ;; callers that use it as their exactly-once ownership marker.
             (if (and (boolean (:value flush-outcome))
-                     (boolean (:value close-outcome)))
+                     (boolean (:value close-outcome))
+                     (not (:shutdown-cancelled? @state)))
               (:value close-outcome)
               false)))))))
 
