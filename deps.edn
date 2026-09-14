@@ -9,7 +9,7 @@
  ;; supplies libssl/libcrypto, and naming it makes the OpenSSL requirement
  ;; visible rather than an implicit transitive fact.
  :deps {io.github.casselc/http-client {:git/url "https://github.com/casselc/http-client.git"
-                                     :git/sha "e77cba3bc4ea0e421d4e107383ba09ffa4294837"}
+                                     :git/sha "89e2084598bd485dfc81268f67ee1cff5b723aa0"}
         jolt-lang/jolt-crypto {:git/url "https://github.com/jolt-lang/jolt-crypto"
                                :git/sha "44da69bad08a2fd7631bd4061e3fb53938dafff6"}
         org.clojure/tools.logging {:git/url "https://github.com/jolt-lang/logging"
@@ -23,7 +23,7 @@
            {:extra-deps
             {jolt-lang/http-client
              {:git/url "https://github.com/casselc/http-client.git"
-              :git/sha "e77cba3bc4ea0e421d4e107383ba09ffa4294837"}}}
+              :git/sha "89e2084598bd485dfc81268f67ee1cff5b723aa0"}}}
 
            :test {:extra-paths ["test"]
                   :extra-deps
