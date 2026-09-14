@@ -270,15 +270,24 @@
   (when worker-owned?
     (swap! state assoc :worker-export-active? true))
   (try
-    (let [collected (collect! provider)]
+    (let [collected (collect! provider)
+          metrics (mapcat :metrics collected)]
       ;; An empty collection is skipped: the OTLP spec allows an empty envelope
       ;; but there is nothing to learn from one, and a collector counts it as a
       ;; request either way.
-      (when (seq (mapcat :metrics collected))
-        (export/export-metrics! exporter (:resource provider) collected)))
+      (when (seq metrics)
+        (let [exported? (boolean
+                         (export/export-metrics! exporter
+                                                 (:resource provider)
+                                                 collected))]
+          (when (and worker-owned? (not exported?))
+            (swap! state assoc :worker-export-failed? true))
+          exported?)))
     (catch :default e
       (binding [*out* *err*]
         (println "otel: metric collection failed:" (ex-message e)))
+      (when worker-owned?
+        (swap! state assoc :worker-export-failed? true))
       false)
     (finally
       (when worker-owned?
@@ -307,7 +316,8 @@
         ;; caller-owned force-flush or releasing the exporter early.
         (swap! state assoc :shutdown? true)
         (lifecycle/await-owned-worker! worker state)
-        (export/shutdown-metric-exporter! exporter)))))
+        (let [close-value (export/shutdown-metric-exporter! exporter)]
+          (if (:worker-export-failed? @state) false close-value))))))
 
 (defn periodic-reader
   "Collect every instrument on an interval and hand the result to `exporter`.
@@ -320,6 +330,7 @@
    (let [config (merge default-reader-config opts)
          state (atom {:shutdown? false
                       :shutdown-cancelled? false
+                      :worker-export-failed? false
                       :worker-export-active? false :worker-interrupt-count 0})
          worker (Thread.
                   (fn []

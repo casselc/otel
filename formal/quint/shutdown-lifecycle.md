@@ -99,7 +99,8 @@ no exporter close after the bounded wait fails, and explicit span-delivery
 failed accounting without a new export for accepted batches behind a cancelled
 operation. Other batch pipelines likewise start no new export.
 Force-flush is deliberately outside that cancellation transition and retains
-transport timeout semantics.
+transport timeout semantics. Real stalled-socket companion tests cover the
+signal-specific span, log, and metric result propagation omitted by this model.
 
 Four mutation modules isolate the assumptions that previously escaped the
 external-call-only Hegel history:

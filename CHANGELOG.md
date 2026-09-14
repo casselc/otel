@@ -11,7 +11,8 @@
   failed non-replayed delivery with per-destination lifecycle results. Accepted
   span batches behind a cancelled in-flight export are counted as attempted
   failures without starting another request; other batch pipelines likewise
-  start no new export.
+  start no new export. Log and metric readers persist an owned export failure
+  through shutdown so a successful close cannot replace the failed delivery.
 
 - Converge OTLP transport on `casselc/http-client`
   merge commit `eab6b78d5957f88690faf6768360572a3f185341`, whose parents are

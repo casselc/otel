@@ -110,7 +110,9 @@ and leaves the exporter open; a bounded join is not treated as quiescence.
 Force-flush retains its existing exporter/request timeout and result semantics
 and does not initiate cancellation. Once shutdown cancellation begins, queued
 span batches are accounted as failed without starting another export on that
-destination; the other batch pipelines likewise start no new export.
+destination; the other batch pipelines likewise start no new export. An owned
+log or metric export interrupted during shutdown persists that failure through
+the terminal result instead of allowing a successful exporter close to mask it.
 
 The executable [shutdown ownership model](formal/quint/shutdown-lifecycle.md)
 documents the shared worker/exporter state machine, its abstraction boundary,

@@ -46,8 +46,14 @@
   (when worker-owned?
     (swap! state assoc :worker-export-active? true))
   (try
-    (export-logs! exporter records)
-    (catch :default _ false)
+    (let [exported? (boolean (export-logs! exporter records))]
+      (when (and worker-owned? (not exported?))
+        (swap! state assoc :worker-export-failed? true))
+      exported?)
+    (catch :default _
+      (when worker-owned?
+        (swap! state assoc :worker-export-failed? true))
+      false)
     (finally
       (when worker-owned?
         (swap! state assoc :worker-export-active? false)))))
@@ -122,7 +128,10 @@
         (lifecycle/await-owned-worker! worker state)
         (let [flushed? (export/force-flush! this)
               close-value (shutdown-log-exporter! exporter)]
-          (if (boolean flushed?) close-value false))))))
+          (if (and (boolean flushed?)
+                   (not (:worker-export-failed? @state)))
+            close-value
+            false))))))
 
 (defn dropped-count [processor] (:dropped @(:state processor)))
 
@@ -133,6 +142,7 @@
    (let [config (merge default-batch-config opts)
          state (atom {:queue [] :dropped 0 :shutdown? false
                       :shutdown-cancelled? false
+                      :worker-export-failed? false
                       :worker-export-active? false :worker-interrupt-count 0})
          worker (Thread.
                   (fn []

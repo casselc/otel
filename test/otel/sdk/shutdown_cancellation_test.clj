@@ -3,9 +3,13 @@
             [jolt.socket]
             [otel.exporter.memory :as memory]
             [otel.exporter.otlp :as otlp]
+            [otel.logs :as log-api]
+            [otel.metrics :as metric-api]
             [otel.resource :as resource]
             [otel.sdk.export :as export]
             [otel.sdk.lifecycle :as lifecycle]
+            [otel.sdk.logs :as sdk-logs]
+            [otel.sdk.metrics :as sdk-metrics]
             [otel.sdk.tracer :as sdk-tracer]
             [otel.trace :as trace]))
 
@@ -49,7 +53,7 @@
           (recur (dec remaining)))))
     {:content-length length}))
 
-(defn- start-stalled-collector []
+(defn- start-stalled-collector [path]
   (let [listener (java.net.ServerSocket. 0)
         peers (atom [])
         requests (atom 0)
@@ -76,7 +80,7 @@
      :requests requests
      :first-request first-request
      :acceptor acceptor
-     :url (str "http://127.0.0.1:" (.getLocalPort listener) "/v1/traces")}))
+     :url (str "http://127.0.0.1:" (.getLocalPort listener) path)}))
 
 (defn- stop-collector! [{:keys [listener peers acceptor]}]
   (close-quietly listener)
@@ -91,13 +95,28 @@
     (swap! shutdown-calls inc)
     (export/shutdown-exporter! delegate)))
 
+(defrecord CountingLogExporter [delegate shutdown-calls]
+  sdk-logs/LogRecordExporter
+  (export-logs! [_ records] (sdk-logs/export-logs! delegate records))
+  (shutdown-log-exporter! [_]
+    (swap! shutdown-calls inc)
+    (sdk-logs/shutdown-log-exporter! delegate)))
+
+(defrecord CountingMetricExporter [delegate shutdown-calls]
+  export/MetricExporter
+  (export-metrics! [_ resource collected]
+    (export/export-metrics! delegate resource collected))
+  (shutdown-metric-exporter! [_]
+    (swap! shutdown-calls inc)
+    (export/shutdown-metric-exporter! delegate)))
+
 (defn- named-processor [pipelines destination]
   (some (fn [[name processor]]
           (when (= destination name) processor))
         (:pipelines pipelines)))
 
 (deftest shutdown-cancels-only-the-owned-stalled-otlp-worker
-  (let [collector (start-stalled-collector)
+  (let [collector (start-stalled-collector "/v1/traces")
         remote-delegate (otlp/exporter {:traces-url (:url collector)
                                         :timeout-ms 10000
                                         :max-retries 0
@@ -201,3 +220,82 @@
         (.join flush-thread 2000)
         (.join shutdown-thread 2000)
         (try (sdk-tracer/shutdown! provider) (catch Throwable _ nil))))))
+
+(deftest stalled-otlp-log-cancellation-remains-a-failed-shutdown
+  (let [collector (start-stalled-collector "/v1/logs")
+        delegate (otlp/log-exporter {:logs-url (:url collector)
+                                     :timeout-ms 10000
+                                     :max-retries 0
+                                     :environment? false})
+        shutdowns (atom 0)
+        exporter (->CountingLogExporter delegate shutdowns)
+        processor (sdk-logs/batch-processor
+                   exporter {:schedule-delay-ms 1
+                             :max-export-batch-size 1
+                             :max-queue-size 2})
+        provider (sdk-logs/logger-provider
+                  {:resource resource/empty-resource
+                   :processors [processor]})
+        logger (sdk-logs/get-logger provider {:name "shutdown.logs"})
+        result (promise)
+        shutdown-thread (Thread. #(deliver result (export/shutdown! processor)))]
+    (try
+      (log-api/emit! logger {:body "blocked" :severity :info})
+      (is (map? (deref (:first-request collector) 3000 ::not-read)))
+      (log-api/emit! logger {:body "queued-1" :severity :info})
+      (log-api/emit! logger {:body "queued-2" :severity :info})
+      (is (= 2 (count (:queue @(:state processor)))))
+      (.start shutdown-thread)
+      (is (false? (deref result 3000 ::still-blocked))
+          "the interrupted owned log export remains a failed shutdown")
+      (is (:worker-export-failed? @(:state processor)))
+      (is (= 1 (:worker-interrupt-count @(:state processor))))
+      (is (empty? (:queue @(:state processor))))
+      (is (not (.isAlive (:worker processor))))
+      (is (= 1 @shutdowns))
+      (is (false? (export/shutdown! processor)))
+      (is (= 1 @shutdowns) "log exporter closes exactly once")
+      (Thread/sleep 300)
+      (is (= 1 @(:requests collector))
+          "queued logs do not start another POST after cancellation")
+      (finally
+        (.interrupt shutdown-thread)
+        (stop-collector! collector)
+        (.join shutdown-thread 2000)
+        (try (sdk-logs/shutdown! provider) (catch Throwable _ nil))))))
+
+(deftest stalled-otlp-metric-cancellation-remains-a-failed-shutdown
+  (let [collector (start-stalled-collector "/v1/metrics")
+        delegate (otlp/metric-exporter {:metrics-url (:url collector)
+                                        :timeout-ms 10000
+                                        :max-retries 0
+                                        :environment? false})
+        shutdowns (atom 0)
+        exporter (->CountingMetricExporter delegate shutdowns)
+        provider (sdk-metrics/meter-provider {:resource resource/empty-resource})
+        meter (sdk-metrics/get-meter provider {:name "shutdown.metrics"})
+        counter (metric-api/counter meter "requests")
+        reader (sdk-metrics/periodic-reader provider exporter {:interval-ms 1})
+        result (promise)
+        shutdown-thread (Thread. #(deliver result (export/shutdown! reader)))]
+    (try
+      (metric-api/add! counter 1)
+      (is (map? (deref (:first-request collector) 3000 ::not-read)))
+      (.start shutdown-thread)
+      (is (false? (deref result 3000 ::still-blocked))
+          "the interrupted owned metric export remains a failed shutdown")
+      (is (:worker-export-failed? @(:state reader)))
+      (is (= 1 (:worker-interrupt-count @(:state reader))))
+      (is (not (.isAlive (:worker reader))))
+      (is (= 1 @shutdowns))
+      (is (false? (export/shutdown! reader)))
+      (is (= 1 @shutdowns) "metric exporter closes exactly once")
+      (Thread/sleep 300)
+      (is (= 1 @(:requests collector))
+          "the interrupted metric POST is not replayed")
+      (finally
+        (.interrupt shutdown-thread)
+        (stop-collector! collector)
+        (.join shutdown-thread 2000)
+        (try (export/shutdown! reader) (catch Throwable _ nil))
+        (try (sdk-metrics/shutdown! provider) (catch Throwable _ nil))))))
