@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Preserve log-record attribute losses reported by the shared bounded
+  normalizer as canonical `droppedAttributesCount` across direct SDK export and
+  OTLP JSON relay. Zero remains omitted, recursive value truncation is not
+  misreported as a dropped top-level attribute, and caller-provided internal
+  count metadata remains untrusted.
+
 - Make owned batch shutdown promptly cancellable without changing force-flush:
   after retiring admission, each span/log processor or metric reader grants a
   250 ms cooperative grace, interrupts only its own worker while that worker
@@ -16,7 +22,7 @@
   A sent owned interrupt is conservatively a failed destination result even
   when the exporter clears interruption and returns true.
   Metric retirement now requires a worker-owned final collection, closing the
-  race that could lose a measurement accepted after the last scheduled snapshot.
+   race that could lose a measurement accepted after the last scheduled snapshot.
 
 - Converge OTLP transport on `casselc/http-client`
   merge commit `eab6b78d5957f88690faf6768360572a3f185341`, whose parents are

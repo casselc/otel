@@ -177,7 +177,9 @@
               ;; request. Captured here because it is gone by export time.
               sc (trace/current-span-context)
               lim (attr/limits {:count-limit (:attribute-count-limit limits)
-                                :value-length-limit (:attribute-value-length-limit limits)})]
+                                :value-length-limit (:attribute-value-length-limit limits)})
+              {:keys [attributes dropped-count]}
+              (attr/normalize-result (:attributes record) lim)]
           (export/on-end
             processor
             (cond-> {:body (canonical-body (:body record))
@@ -186,9 +188,10 @@
                      :severity-text (or (:severity-text record) (api/severity-text level))
                      :timestamp-unix-nano (:timestamp record)
                      :observed-time-unix-nano (or (:observed-timestamp record) now)
-                     :attributes (attr/normalize (:attributes record) lim)
+                     :attributes attributes
                      :resource resource
                      :scope scope}
+              (pos? dropped-count) (assoc :dropped-attributes-count dropped-count)
               (trace/valid? sc) (assoc :trace-id (:trace-id sc)
                                        :span-id (:span-id sc)
                                        :trace-flags (:trace-flags sc)))))))
