@@ -100,12 +100,15 @@ Shutdown rejects new processor/reader work, drains accepted work, waits for each
 background worker to terminate, and only then shuts down its exporter. For
 spans and logs that means no new enqueue; an existing metric instrument may
 still record locally, but its shut-down reader rejects later collection/export.
-Shutdown has no separate
-worker-wait timeout: exporter-specific timeouts or cancellation own any bound
-on exporter work, while treating an arbitrary join timeout as quiescence could
-close an exporter still in use. If the waiting thread is interrupted, every
-concurrent or later shutdown caller observes the same failure and the exporter
-remains open.
+Shutdown first retires that processor or reader's admission source, then gives
+its worker a 250 ms cooperative grace. If the exact worker still owns exporter
+I/O, shutdown interrupts only that worker and requires it to terminate within a
+further 2,000 ms before closing the exporter. A healthy sibling worker, or a
+caller performing force-flush, is never interrupted by another destination's
+shutdown. Failure to establish worker termination is a shared terminal failure
+and leaves the exporter open; a bounded join is not treated as quiescence.
+Force-flush retains its existing exporter/request timeout and result semantics
+and does not initiate cancellation.
 
 The executable [shutdown ownership model](formal/quint/shutdown-lifecycle.md)
 documents the shared worker/exporter state machine, its abstraction boundary,
@@ -253,6 +256,10 @@ exported, failed, and dropped span counts without retaining exporter values,
 throwables, response bodies, endpoints, headers, or payloads. This lifetime
 window is deliberately conservative: once a processor loses an accepted span,
 later lifecycle barriers for that processor continue to report failure.
+During shutdown, each destination retires its own queue before cancellation.
+A stalled worker is interrupted only after the cooperative grace, while healthy
+destinations continue draining and retain their own named result. An interrupted
+OTLP POST reports failed delivery and is not replayed.
 
 This primitive composes traces only. Logs and metrics keep their own explicit
 processor and reader configuration. Applications using the global SDK can pass

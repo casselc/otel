@@ -42,8 +42,15 @@
 
 ;; --- processors -------------------------------------------------------------
 
-(defn- export-quietly! [exporter records]
-  (try (export-logs! exporter records) (catch :default _ false)))
+(defn- export-quietly! [exporter state records worker-owned?]
+  (when worker-owned?
+    (swap! state assoc :worker-export-active? true))
+  (try
+    (export-logs! exporter records)
+    (catch :default _ false)
+    (finally
+      (when worker-owned?
+        (swap! state assoc :worker-export-active? false)))))
 
 (defrecord SimpleLogProcessor [exporter state terminal]
   export/SpanProcessor
@@ -51,7 +58,7 @@
   (on-end [_ record]
     (locking state
       (when-not (:shutdown? @state)
-        (export-quietly! exporter [record])))
+        (export-quietly! exporter state [record] false)))
     nil)
   (force-flush! [_] true)
   (shutdown! [_]
@@ -79,12 +86,12 @@
                                   (assoc s :queue (subvec q (min n (count q)))))))]
     (subvec (:queue old) 0 (- (count (:queue old)) (count (:queue new))))))
 
-(defn- drain! [exporter state batch-size]
+(defn- drain! [exporter state batch-size worker-owned?]
   (loop [ok true]
     (let [batch (take-batch! state batch-size)]
       (if (empty? batch)
         ok
-        (recur (and (export-quietly! exporter batch) ok))))))
+        (recur (and (export-quietly! exporter state batch worker-owned?) ok))))))
 
 (defrecord BatchLogProcessor [exporter state config worker terminal]
   export/SpanProcessor
@@ -103,15 +110,16 @@
     ;; drain monitor turns force-flush into a completion barrier for a worker's
     ;; already-dequeued batch as well as for records still in the queue.
     (locking state
-      (boolean (drain! exporter state (:max-export-batch-size config)))))
+      (boolean (drain! exporter state (:max-export-batch-size config) false))))
   (shutdown! [this]
     (lifecycle/run-terminal!
       terminal
       (fn []
         (swap! state assoc :shutdown? true)
-        (export/force-flush! this)
-        (lifecycle/await-worker! worker)
-        (shutdown-log-exporter! exporter)))))
+        (lifecycle/await-owned-worker! worker state)
+        (let [flushed? (export/force-flush! this)
+              close-value (shutdown-log-exporter! exporter)]
+          (if (boolean flushed?) close-value false))))))
 
 (defn dropped-count [processor] (:dropped @(:state processor)))
 
@@ -120,7 +128,8 @@
   ([exporter] (batch-processor exporter {}))
   ([exporter opts]
    (let [config (merge default-batch-config opts)
-         state (atom {:queue [] :dropped 0 :shutdown? false})
+         state (atom {:queue [] :dropped 0 :shutdown? false
+                      :worker-export-active? false :worker-interrupt-count 0})
          worker (Thread.
                   (fn []
                     (loop []
@@ -130,7 +139,8 @@
                             (Thread/sleep slice)
                             (recur (- remaining slice)))))
                       (locking state
-                        (drain! exporter state (:max-export-batch-size config)))
+                        (drain! exporter state (:max-export-batch-size config)
+                                true))
                       (when-not (:shutdown? @state) (recur)))))]
      (.setDaemon worker true)
      (.start worker)

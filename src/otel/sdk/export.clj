@@ -111,14 +111,25 @@
                                   (assoc s :queue (subvec q (min n (count q)))))))]
     (subvec (:queue old) 0 (- (count (:queue old)) (count (:queue new))))))
 
+(defn- export-owned-quietly!
+  [exporter state batch worker-owned?]
+  (when worker-owned?
+    (swap! state assoc :worker-export-active? true))
+  (try
+    (export-quietly! exporter batch)
+    (finally
+      (when worker-owned?
+        (swap! state assoc :worker-export-active? false)))))
+
 (defn- drain!
   "Export everything queued and retain scalar delivery evidence for its owner."
-  [exporter state batch-size]
+  [exporter state batch-size worker-owned?]
   (loop [ok true]
     (let [batch (take-batch! state batch-size)]
       (if (empty? batch)
         ok
-        (let [exported? (boolean (export-quietly! exporter batch))
+        (let [exported? (boolean (export-owned-quietly!
+                                  exporter state batch worker-owned?))
               span-count (count batch)]
           ;; Retain only scalar counts. Exporter failures can carry endpoints,
           ;; headers, response bodies, or payloads and must never enter state.
@@ -168,7 +179,8 @@
     ;; not sufficient. Using the atom object only as a monitor still leaves its
     ;; lock-free swap path available to nonblocking producers.
     (locking state
-      (let [drained? (drain! exporter state (:max-export-batch-size config))
+      (let [drained? (drain! exporter state (:max-export-batch-size config)
+                             false)
             ;; Do not short-circuit exporter flush after a failed drain. The
             ;; callback may own buffered resources even when this batch failed.
             flushed? (flush-exporter-suppressed! exporter)
@@ -183,15 +195,15 @@
         ;; on-end: every span accepted before it is drained, and later spans are
         ;; rejected.
         (swap! state assoc :shutdown? true)
-        ;; A failed flush cannot waive worker quiescence or, once quiescence is
-        ;; established, exporter cleanup. Capture that failure so the worker is
-        ;; still joined. Conversely, a failed join must leave the exporter open:
-        ;; its worker may still own or call it.
-        (let [flush-outcome (try
+        ;; The worker owns the final drain after admission retires. Give a
+        ;; healthy export a cooperative grace, then interrupt only when this
+        ;; exact worker still owns exporter I/O. A failed bounded join leaves
+        ;; the exporter open; a timeout is not evidence of quiescence.
+        (let [_ (lifecycle/await-owned-worker! worker state)
+              flush-outcome (try
                               {:value (force-flush! this)}
                               (catch :default throwable
                                 {:throwable throwable}))
-              _ (lifecycle/await-worker! worker)
               close-outcome (try
                               {:value (shutdown-exporter-suppressed! exporter)}
                               (catch :default throwable
@@ -241,6 +253,7 @@
   ([exporter opts]
    (let [config (checked-batch-config opts)
          state (atom {:queue [] :dropped 0 :shutdown? false
+                      :worker-export-active? false :worker-interrupt-count 0
                       :attempted-span-count 0
                       :exported-span-count 0
                       :failed-span-count 0})
@@ -251,7 +264,8 @@
                       ;; Drain unconditionally, including on the way out: spans
                       ;; ended just before shutdown must still be exported.
                       (locking state
-                        (drain! exporter state (:max-export-batch-size config)))
+                        (drain! exporter state (:max-export-batch-size config)
+                                true))
                       (when-not (:shutdown? @state) (recur)))))]
      ;; A daemon thread: a background exporter must never be the reason a process
      ;; refuses to exit.

@@ -266,7 +266,9 @@
   {:interval-ms 60000})
 
 (defn- collect-and-export!
-  [provider exporter]
+  [provider exporter state worker-owned?]
+  (when worker-owned?
+    (swap! state assoc :worker-export-active? true))
   (try
     (let [collected (collect! provider)]
       ;; An empty collection is skipped: the OTLP spec allows an empty envelope
@@ -277,7 +279,10 @@
     (catch :default e
       (binding [*out* *err*]
         (println "otel: metric collection failed:" (ex-message e)))
-      false)))
+      false)
+    (finally
+      (when worker-owned?
+        (swap! state assoc :worker-export-active? false)))))
 
 (defrecord PeriodicReader [provider exporter config state worker terminal]
   export/SpanProcessor
@@ -292,18 +297,16 @@
     (locking state
       (if (:shutdown? @state)
         false
-        (boolean (collect-and-export! provider exporter)))))
+        (boolean (collect-and-export! provider exporter state false)))))
   (shutdown! [this]
     (lifecycle/run-terminal!
       terminal
       (fn []
-        ;; Serialize the acceptance boundary with both scheduled and explicit
-        ;; collections. The final collection covers everything recorded before
-        ;; shutdown; later force-flush calls are rejected.
-        (locking state
-          (swap! state assoc :shutdown? true)
-          (collect-and-export! provider exporter))
-        (lifecycle/await-worker! worker)
+        ;; Retire collection first. The worker owns one final collection, so an
+        ;; in-flight or shutdown drain can be cancelled without interrupting a
+        ;; caller-owned force-flush or releasing the exporter early.
+        (swap! state assoc :shutdown? true)
+        (lifecycle/await-owned-worker! worker state)
         (export/shutdown-metric-exporter! exporter)))))
 
 (defn periodic-reader
@@ -315,7 +318,8 @@
   ([provider exporter] (periodic-reader provider exporter {}))
   ([provider exporter opts]
    (let [config (merge default-reader-config opts)
-         state (atom {:shutdown? false})
+         state (atom {:shutdown? false
+                      :worker-export-active? false :worker-interrupt-count 0})
          worker (Thread.
                   (fn []
                     (loop []
@@ -326,11 +330,12 @@
                           (let [slice (min 50 remaining)]
                             (Thread/sleep slice)
                             (recur (- remaining slice)))))
-                      (when-not (:shutdown? @state)
-                        (locking state
-                          (when-not (:shutdown? @state)
-                            (collect-and-export! provider exporter)))
-                        (recur)))))]
+                      ;; Collect once on the way out as well. That keeps the
+                      ;; final pre-retirement measurements on the owned worker,
+                      ;; where shutdown can cancel a stalled exporter safely.
+                      (locking state
+                        (collect-and-export! provider exporter state true))
+                      (when-not (:shutdown? @state) (recur)))))]
      (.setDaemon worker true)
      (.start worker)
      (->PeriodicReader provider exporter config state worker

@@ -13,8 +13,8 @@ The model follows these implementation seams:
 | --- | --- |
 | stop accepting owner work | the processor/reader's `:shutdown?` state transition |
 | export starts/finishes | exporter I/O performed by the background worker |
-| worker becomes terminal | `otel.sdk.lifecycle/await-worker!` returns from the unbounded join |
-| worker wait fails | `await-worker!` throws, including interruption |
+| worker becomes terminal | `otel.sdk.lifecycle/await-owned-worker!` observes actual termination after cooperative exit or destination-owned cancellation |
+| worker wait fails | `await-owned-worker!` throws, including caller interruption or failure to terminate within the documented bound |
 | exporter close call and outcome | the signal-specific exporter shutdown protocol method |
 | shared terminal observation | `otel.sdk.lifecycle/run-terminal!` publishes one value or Throwable |
 
@@ -47,12 +47,14 @@ observation remain separate so the property cannot be satisfied vacuously by
 one atomic shutdown action.
 
 The model hides queues, drain batching, locks, wall-clock intervals, exporter
-payloads, and Throwable identity. Runtime tests retain responsibility for those
-mechanics and for asserting that every caller receives the identical returned
+payloads, cancellation grace, interrupt delivery, and Throwable identity.
+Runtime tests retain responsibility for those mechanics, for proving that only
+the exact worker recorded as exporter owner is interrupted after admission
+retires, and for asserting that every caller receives the identical returned
 object or Throwable. `TerminalFailed` may follow either an interrupted/failed
 worker wait or an exporter-close failure, but the two causes remain distinct in
-`waitOutcome` and `closeOutcome`. The model is safety-only: it does not claim
-that a blocked export, worker, or shutdown caller eventually progresses.
+`waitOutcome` and `closeOutcome`. The model remains a safety model: the runtime
+gate, rather than Quint, checks the 250 ms grace plus 2,000 ms terminal bound.
 
 “Owner work” is deliberately narrower than producer-side telemetry recording.
 For batch spans and logs, rejection means `on-end` cannot enqueue a new item.
@@ -90,6 +92,11 @@ The corrected model requires:
 - a failed/interrupted wait never releases exporter ownership;
 - terminal observers all see the one published outcome; and
 - owner work attempted after the acceptance boundary is rejected.
+
+The runtime cancellation companion additionally requires admission retirement
+before interruption, exact worker/export-owner identity, no sibling interrupt,
+and no exporter close after the bounded wait fails. Force-flush is deliberately
+outside that cancellation transition and retains transport timeout semantics.
 
 Four mutation modules isolate the assumptions that previously escaped the
 external-call-only Hegel history:

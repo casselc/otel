@@ -189,8 +189,8 @@
     (try
       (.start worker)
       (is (= true (deref export-started 2000 ::timeout)))
-      (with-redefs [lifecycle/await-worker!
-                    (fn [worker]
+      (with-redefs [lifecycle/await-owned-worker!
+                    (fn [worker _state]
                       (deliver awaiting-worker true)
                       (try
                         (let [result (await-worker! worker)]
@@ -340,7 +340,7 @@
                 marker export-started release-export start-owner-work!
                 probe-late-owner-work!]}
         (real-worker-owner-case signal events)
-        await-worker! lifecycle/await-worker!
+        await-owned-worker! lifecycle/await-owned-worker!
         result (promise)
         caller (Thread.
                  (fn []
@@ -349,10 +349,10 @@
     (try
       (start-owner-work!)
       (is (= true (deref export-started 2000 ::timeout)))
-      (with-redefs [lifecycle/await-worker!
-                    (fn [worker]
+      (with-redefs [lifecycle/await-owned-worker!
+                    (fn [worker state]
                       (try
-                        (let [joined (await-worker! worker)]
+                        (let [joined (await-owned-worker! worker state)]
                           (lifecycle-events/record! events :worker-terminal)
                           (lifecycle-events/record!
                             events :worker-wait-succeeded)
@@ -396,7 +396,8 @@
             ;; reader :shutdown? guard removed. The fresh post-shutdown counter
             ;; value reaches the exporter and the ownership trace turns red.
             (is (true? (boolean
-                         (unguarded-collect-and-export! provider exporter))))
+                         (unguarded-collect-and-export!
+                          provider exporter (:state owner) false))))
             (is (= (inc before) @export-calls))
             (is (not (lifecycle-events/valid? @events))))))
       (finally
