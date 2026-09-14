@@ -110,6 +110,18 @@
     (swap! shutdown-calls inc)
     (export/shutdown-metric-exporter! delegate)))
 
+(defrecord BarrierMetricExporter [entered release batches shutdown-calls]
+  export/MetricExporter
+  (export-metrics! [_ _ collected]
+    (let [call-number (count (swap! batches conj collected))]
+      (when (= 1 call-number)
+        (deliver entered true)
+        @release)
+      true))
+  (shutdown-metric-exporter! [_]
+    (swap! shutdown-calls inc)
+    true))
+
 (defn- named-processor [pipelines destination]
   (some (fn [[name processor]]
           (when (= destination name) processor))
@@ -296,6 +308,48 @@
       (finally
         (.interrupt shutdown-thread)
         (stop-collector! collector)
+        (.join shutdown-thread 2000)
+        (try (export/shutdown! reader) (catch Throwable _ nil))
+        (try (sdk-metrics/shutdown! provider) (catch Throwable _ nil))))))
+
+(deftest metric-retirement-race-performs-an-owned-final-collection
+  (let [entered (promise)
+        release (promise)
+        batches (atom [])
+        shutdowns (atom 0)
+        exporter (->BarrierMetricExporter entered release batches shutdowns)
+        provider (sdk-metrics/meter-provider {:resource resource/empty-resource})
+        meter (sdk-metrics/get-meter provider {:name "shutdown.metric-race"})
+        counter (metric-api/counter meter "requests")
+        reader (sdk-metrics/periodic-reader provider exporter {:interval-ms 1})
+        result (promise)
+        shutdown-thread (Thread. #(deliver result (export/shutdown! reader)))]
+    (try
+      (metric-api/add! counter 1)
+      (is (= true (deref entered 3000 ::not-entered))
+          "the scheduled export reaches the deterministic return barrier")
+      ;; This measurement is accepted after the scheduled collection snapshot
+      ;; but before shutdown retirement. The old recurrence check exited after
+      ;; the first exporter returned and lost it.
+      (metric-api/add! counter 1)
+      (.start shutdown-thread)
+      (is (await! #(:shutdown? @(:state reader)) 1000)
+          "retirement becomes visible before the scheduled export returns")
+      (is (= ::still-blocked (deref result 100 ::still-blocked)))
+      (deliver release true)
+      (is (true? (deref result 3000 ::still-blocked)))
+      (is (= 2 (count @batches))
+          "the owned worker performs one post-retirement final export")
+      (is (= 2 (-> @batches last first :metrics first
+                   :data-points first :value))
+          "the final export contains the measurement accepted before retirement")
+      (is (not (.isAlive (:worker reader))))
+      (is (= 1 @shutdowns))
+      (is (true? (export/shutdown! reader)))
+      (is (= 1 @shutdowns) "the metric exporter closes exactly once")
+      (finally
+        (deliver release true)
+        (.interrupt shutdown-thread)
         (.join shutdown-thread 2000)
         (try (export/shutdown! reader) (catch Throwable _ nil))
         (try (sdk-metrics/shutdown! provider) (catch Throwable _ nil))))))

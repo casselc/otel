@@ -342,12 +342,18 @@
                           (let [slice (min 50 remaining)]
                             (Thread/sleep slice)
                             (recur (- remaining slice)))))
-                      ;; Collect once on the way out as well. That keeps the
-                      ;; final pre-retirement measurements on the owned worker,
-                      ;; where shutdown can cancel a stalled exporter safely.
-                      (locking state
-                        (collect-and-export! provider exporter state true))
-                      (when-not (:shutdown? @state) (recur)))))]
+                      ;; Exit only after a collection that began with retirement
+                      ;; already visible. If shutdown races immediately after a
+                      ;; scheduled collection, recur once without sleeping and
+                      ;; collect the measurements accepted before retirement.
+                      ;; The final export stays on this owned worker, where
+                      ;; shutdown can cancel it safely.
+                      (let [retired-before-collection? (:shutdown? @state)]
+                        (locking state
+                          (collect-and-export! provider exporter state true))
+                        (when-not (or retired-before-collection?
+                                      (:shutdown-cancelled? @state))
+                          (recur))))))]
      (.setDaemon worker true)
      (.start worker)
      (->PeriodicReader provider exporter config state worker

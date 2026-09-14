@@ -13,6 +13,8 @@
   failures without starting another request; other batch pipelines likewise
   start no new export. Log and metric readers persist an owned export failure
   through shutdown so a successful close cannot replace the failed delivery.
+  Metric retirement now requires a worker-owned final collection, closing the
+  race that could lose a measurement accepted after the last scheduled snapshot.
 
 - Converge OTLP transport on `casselc/http-client`
   merge commit `eab6b78d5957f88690faf6768360572a3f185341`, whose parents are

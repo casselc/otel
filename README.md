@@ -113,6 +113,9 @@ span batches are accounted as failed without starting another export on that
 destination; the other batch pipelines likewise start no new export. An owned
 log or metric export interrupted during shutdown persists that failure through
 the terminal result instead of allowing a successful exporter close to mask it.
+A metric reader exits only after an owned collection that observed retirement
+before it began, so a measurement accepted between a scheduled collection and
+the retirement decision is included in one final export.
 
 The executable [shutdown ownership model](formal/quint/shutdown-lifecycle.md)
 documents the shared worker/exporter state machine, its abstraction boundary,
