@@ -143,6 +143,19 @@
   (export-metrics! [_ _ _] (swallow-interrupt-and-succeed! entered))
   (shutdown-metric-exporter! [_] (swap! shutdown-calls inc) true))
 
+(defrecord IgnoreInterruptExporter [entered release shutdown-calls]
+  export/SpanExporter
+  (export-spans! [_ _]
+    (deliver entered true)
+    (loop []
+      (if (realized? release)
+        true
+        (do
+          (try (Thread/sleep 10) (catch :default _ nil))
+          (recur)))))
+  (flush-exporter! [_] true)
+  (shutdown-exporter! [_] (swap! shutdown-calls inc) true))
+
 (defn- named-processor [pipelines destination]
   (some (fn [[name processor]]
           (when (= destination name) processor))
@@ -448,3 +461,46 @@
         (.join thread 2000)
         (try (export/shutdown! reader) (catch Throwable _ nil))
         (try (sdk-metrics/shutdown! provider) (catch Throwable _ nil))))))
+
+(deftest join-timeout-is-shared-and-never-closes-a-live-exporter
+  (with-redefs [lifecycle/shutdown-cancel-grace-ms 10
+                lifecycle/shutdown-join-bound-ms 50]
+    (let [entered (promise)
+          release (promise)
+          shutdowns (atom 0)
+          exporter (->IgnoreInterruptExporter entered release shutdowns)
+          processor (export/batch-processor exporter {:schedule-delay-ms 1})
+          provider (sdk-tracer/tracer-provider
+                    {:resource resource/empty-resource :processors [processor]})
+          tracer (sdk-tracer/get-tracer provider {:name "join.timeout"})
+          outcome (promise)
+          thread (Thread.
+                  #(deliver outcome
+                            (try
+                              {:value (export/shutdown! processor)}
+                              (catch Throwable throwable
+                                {:throwable throwable}))))]
+      (try
+        (trace/with-span [span tracer "ignores-interrupt"])
+        (is (= true (deref entered 3000 ::not-entered)))
+        (.start thread)
+        (let [first-error (:throwable (deref outcome 1000 ::still-blocked))
+              second-error (try
+                             (export/shutdown! processor)
+                             nil
+                             (catch Throwable throwable throwable))]
+          (is (= :worker-join-timeout
+                 (:otel.sdk/error (ex-data first-error))))
+          (is (= 50 (:timeout-ms (ex-data first-error))))
+          (is (.isAlive (:worker processor))
+              "a bounded wait never claims the ignoring worker is quiescent")
+          (is (zero? @shutdowns)
+              "the exporter remains open while its worker is alive")
+          (is (identical? first-error second-error)
+              "every terminal caller observes the exact same timeout object"))
+        (finally
+          (deliver release true)
+          (.join (:worker processor) 2000)
+          (.interrupt thread)
+          (.join thread 2000)
+          (try (sdk-tracer/shutdown! provider) (catch Throwable _ nil)))))))

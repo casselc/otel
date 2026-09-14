@@ -28,7 +28,9 @@
 (def shutdown-join-bound-ms
   "Maximum wait after the cooperative grace for an owned worker to terminate.
   Exceeding the bound is a terminal failure; the exporter remains open because
-  bounded waiting is not evidence of worker quiescence."
+  bounded waiting is not evidence of worker quiescence. This public policy seam
+  may be rebound by causal tests to exercise timeout handling without a real
+  two-second delay."
   2000)
 
 (def ^:private shutdown-join-poll-ms 25)
