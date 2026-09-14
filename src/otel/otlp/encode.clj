@@ -212,6 +212,8 @@
     ;; tells the backend to fall back to the observed time rather than to 1970.
     (:timestamp-unix-nano r) (assoc :timeUnixNano (i64 (:timestamp-unix-nano r)))
     (seq (:attributes r)) (assoc :attributes (key-values (:attributes r)))
+    (pos? (or (:dropped-attributes-count r) 0))
+    (assoc :droppedAttributesCount (:dropped-attributes-count r))
     ;; The correlation that makes a log record worth sending through OTel at all.
     (:trace-id r) (assoc :traceId (:trace-id r))
     (:span-id r) (assoc :spanId (:span-id r))

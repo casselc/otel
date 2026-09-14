@@ -14,15 +14,18 @@
             [otel.sdk.tracer :as sdk-tracer]
             [otel.trace :as trace]))
 
-(defn- setup []
-  (let [exporter (memory/log-exporter)
-        provider (sdk-logs/logger-provider
-                   {:resource (res/resource {:service.name "svc"})
-                    :processors [(sdk-logs/simple-processor exporter)]
-                    :clock (clock/fake-clock {:wall 1000 :mono 0})})]
-    {:exporter exporter
-     :provider provider
-     :logger (sdk-logs/get-logger provider {:name "scope" :version "1.0"})}))
+(defn- setup
+  ([] (setup {}))
+  ([provider-options]
+   (let [exporter (memory/log-exporter)
+         provider (sdk-logs/logger-provider
+                    (merge {:resource (res/resource {:service.name "svc"})
+                            :processors [(sdk-logs/simple-processor exporter)]
+                            :clock (clock/fake-clock {:wall 1000 :mono 0})}
+                           provider-options))]
+     {:exporter exporter
+      :provider provider
+      :logger (sdk-logs/get-logger provider {:name "scope" :version "1.0"})})))
 
 (defrecord BlockingLogExporter [entered release exported?]
   sdk-logs/LogRecordExporter
@@ -63,7 +66,47 @@
     (logs/emit! logger {:body "x" :severity :warn :attributes {:user.id 42 :dropped nil}})
     (let [[r] (memory/records exporter)]
       (is (= 42 (get (:attributes r) "user.id")))
-      (is (not (contains? (:attributes r) "dropped"))))))
+      (is (not (contains? (:attributes r) "dropped")))
+      (is (= 1 (:dropped-attributes-count r))))))
+
+(deftest record-attribute-loss-is-counted-without-trusting-caller-metadata
+  (let [{:keys [logger exporter]} (setup)]
+    (logs/emit! logger {:body "invalid"
+                        :severity :info
+                        :attributes {:ok 1 :bad nil}})
+    (logs/emit! logger {:body "collision"
+                        :severity :info
+                        :attributes {:same 1 "same" 2 :ok 3}})
+    (logs/emit! logger {:body "caller-metadata"
+                        :severity :info
+                        :dropped-attributes-count 99
+                        :attributes {:ok 4}})
+    (let [[invalid collision caller-metadata] (memory/records exporter)]
+      (is (= {"ok" 1} (:attributes invalid)))
+      (is (= 1 (:dropped-attributes-count invalid)))
+      (is (= {"ok" 3} (:attributes collision)))
+      (is (= 2 (:dropped-attributes-count collision)))
+      (is (= {"ok" 4} (:attributes caller-metadata)))
+      (is (not (contains? caller-metadata :dropped-attributes-count))))))
+
+(deftest record-attribute-count-limit-and-value-truncation-stay-distinct
+  (let [{:keys [logger exporter]}
+        (setup {:limits {:attribute-count-limit 2
+                         :attribute-value-length-limit 3}})]
+    (logs/emit! logger {:body "bounded"
+                        :severity :info
+                        :attributes {:a "abcdef" :b 2 :c 3}})
+    (let [[record] (memory/records exporter)]
+      (is (= {"a" "abc" "b" 2} (:attributes record)))
+      (is (= 1 (:dropped-attributes-count record))
+          "the top-level count limit drops one entry; truncation is not a drop"))))
+
+(deftest zero-record-attribute-loss-is-canonically-absent
+  (let [{:keys [logger exporter]} (setup)]
+    (logs/emit! logger {:body "complete" :severity :info :attributes {:ok true}})
+    (let [[record] (memory/records exporter)]
+      (is (= {"ok" true} (:attributes record)))
+      (is (not (contains? record :dropped-attributes-count))))))
 
 (deftest scope-and-resource-are-recorded
   (let [{:keys [logger exporter]} (setup)]

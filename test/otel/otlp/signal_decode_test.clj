@@ -102,6 +102,40 @@
                          [:scope :dropped-attributes-count])))
         (is (= 3 (:dropped-attributes-count counted-record)))))))
 
+(deftest sdk-log-record-dropped-attribute-counts-round-trip-and-reject-bad-siblings
+  (let [exporter (memory/log-exporter)
+        provider (sdk-logs/logger-provider
+                  {:resource resource/empty-resource
+                   :clock (clock/fake-clock {:wall 1000 :mono 0})
+                   :processors [(sdk-logs/simple-processor exporter)]})
+        logger (sdk-logs/get-logger provider {:name "dropped-roundtrip"})]
+    (logs/emit! logger {:body "loss" :severity :info
+                        :attributes {:kept 1 :rejected nil}})
+    (logs/emit! logger {:body "complete" :severity :info
+                        :attributes {:kept 2}})
+    (let [direct (vec (memory/records exporter))
+          request (encode/logs-request direct)
+          wire-records (get-in request [:resourceLogs 0 :scopeLogs 0 :logRecords])
+          decoded (decode/decode-logs request)]
+      (is (= 1 (:dropped-attributes-count (first direct))))
+      (is (not (contains? (second direct) :dropped-attributes-count)))
+      (is (= 1 (:droppedAttributesCount (first wire-records))))
+      (is (not (contains? (second wire-records) :droppedAttributesCount)))
+      (is (= direct (:records decoded)))
+      (is (zero? (:rejected-log-records decoded)))
+      (doseq [bad [-1 4294967296 "not-an-integer"]]
+        (let [malformed (assoc-in request
+                                  [:resourceLogs 0 :scopeLogs 0 :logRecords 0
+                                   :droppedAttributesCount]
+                                  bad)
+              result (decode/decode-logs malformed)]
+          (is (= 1 (:rejected-log-records result)))
+          (is (= [(second direct)] (:records result)))
+          (is (= :invalid-integer (-> result :errors first :reason)))
+          (is (= ["resourceLogs" 0 "scopeLogs" 0 "logRecords" 0
+                  "droppedAttributesCount"]
+                 (-> result :errors first :path))))))))
+
 (deftest sdk-metric-collection-is-the-canonical-receiver-collection
   (let [resource (resource/resource {"resource.boolean" false})
         provider (sdk-metrics/meter-provider

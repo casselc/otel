@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Preserve log-record attribute losses reported by the shared bounded
+  normalizer as canonical `droppedAttributesCount` across direct SDK export and
+  OTLP JSON relay. Zero remains omitted, recursive value truncation is not
+  misreported as a dropped top-level attribute, and caller-provided internal
+  count metadata remains untrusted.
+
 - Converge OTLP transport on `casselc/http-client`
   merge commit `eab6b78d5957f88690faf6768360572a3f185341`, whose parents are
   prior `main` `8e8f8f2268fd8625116f9b9a7e4766d65ffd218a` and reviewed provider
