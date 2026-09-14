@@ -3,8 +3,10 @@
 ## Unreleased
 
 - Converge OTLP transport on `casselc/http-client`
-  `89e2084598bd485dfc81268f67ee1cff5b723aa0`, which descends from append-only
-  integration merge `8f449006eb8c679755fa1dae6aeb933cfb51211c` of request-aspect
+  merge commit `eab6b78d5957f88690faf6768360572a3f185341`, whose parents are
+  prior `main` `8e8f8f2268fd8625116f9b9a7e4766d65ffd218a` and reviewed provider
+  head `89e2084598bd485dfc81268f67ee1cff5b723aa0`. The provider head descends
+  from append-only integration merge `8f449006eb8c679755fa1dae6aeb933cfb51211c` of request-aspect
   fork parent `9cb5801e8c5929387715aa6713c33b2c21fd9a2a` and
   `jolt-lang/http-client` v0.0.10 parent
   `b98833b8338b66d435cdbffa480ba2b59c005a2e`. Samizdat-style consumer graph

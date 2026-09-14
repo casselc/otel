@@ -8,7 +8,7 @@
 (def ^:private expected-resolutions
   [{:coordinate "io.github.casselc/http-client"
     :repository "https___github.com_casselc_http-client.git"
-    :sha "89e2084598bd485dfc81268f67ee1cff5b723aa0"}
+    :sha "eab6b78d5957f88690faf6768360572a3f185341"}
    {:coordinate "io.github.chucklehead-dev/jolt-hegel"
     :repository "https___github.com_chucklehead-dev_jolt-hegel.git"
     :sha "b214f769983211431c74e427f0f35553cfba7b34"}])
@@ -17,7 +17,7 @@
   "44da69bad08a2fd7631bd4061e3fb53938dafff6")
 
 (def ^:private http-sha
-  "89e2084598bd485dfc81268f67ee1cff5b723aa0")
+  "eab6b78d5957f88690faf6768360572a3f185341")
 
 (def ^:private divergent-upstream-sha
   "ccce992d6e3d0035a5ffd1d4364cdb39df4af2f0")

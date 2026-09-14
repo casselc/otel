@@ -36,8 +36,11 @@ will not silently fall back to a millisecond clock: that is the exact defect the
 two-clock design exists to avoid, and a quiet degradation would make every span
 duration wrong in a way nothing downstream could detect.
 
-The HTTP provider is `casselc/http-client` at
-`89e2084598bd485dfc81268f67ee1cff5b723aa0`. It descends from integration merge
+The HTTP provider is `casselc/http-client` at immutable merge commit
+`eab6b78d5957f88690faf6768360572a3f185341`, whose
+parents are prior `main` `8e8f8f2268fd8625116f9b9a7e4766d65ffd218a`
+and reviewed provider head `89e2084598bd485dfc81268f67ee1cff5b723aa0`.
+The reviewed head descends from integration merge
 `8f449006eb8c679755fa1dae6aeb933cfb51211c`, whose parents are
 `9cb5801e8c5929387715aa6713c33b2c21fd9a2a` (the request-aspect, relative
 redirect, and canonical-provider lineage) and
