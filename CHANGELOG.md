@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Converge OTLP transport on `casselc/http-client`
+  `8f449006eb8c679755fa1dae6aeb933cfb51211c`, the append-only merge of the
+  request-aspect fork parent `9cb5801e8c5929387715aa6713c33b2c21fd9a2a`
+  and `jolt-lang/http-client` v0.0.10 parent
+  `b98833b8338b66d435cdbffa480ba2b59c005a2e`. Samizdat-style consumer graph
+  tests require one shared source root for every `jolt.http.*` namespace and a
+  discoverable exact-one request manifest; a hermetic stalled peer verifies
+  that thread interruption returns within the provider's read slice rather
+  than the socket timeout. The minimum Jolt runtime is now 0.8.1. OTel's public
+  API and OTLP wire behavior are unchanged.
+
 - Retain bounded scalar delivery counts for batch span processors so a failed
   background export remains visible through later per-destination force-flush
   and shutdown results. Healthy pipelines continue independently, and no

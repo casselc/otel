@@ -26,14 +26,30 @@ selected graph under both known local and hosted cache layouts.
 
 ## Requirements
 
-jolt v0.8.0 or newer. The telemetry implementation uses the `jolt.host`
+jolt v0.8.1 or newer. The telemetry implementation uses the `jolt.host`
 primitives (`wall-nanos`, `mono-nanos`, and the gc and memory counters) and its
-HTTP/TLS dependencies use Jolt 0.8's value-first FFI write API.
+HTTP/TLS dependencies use Jolt 0.8's value-first FFI write API and the executor
+interfaces added in 0.8.1.
 
 The SDK checks at startup and says so plainly if the primitives are missing. It
 will not silently fall back to a millisecond clock: that is the exact defect the
 two-clock design exists to avoid, and a quiet degradation would make every span
 duration wrong in a way nothing downstream could detect.
+
+The HTTP provider is `casselc/http-client` at
+`8f449006eb8c679755fa1dae6aeb933cfb51211c`. That append-only merge has parents
+`9cb5801e8c5929387715aa6713c33b2c21fd9a2a` (the request-aspect, relative
+redirect, and canonical-provider lineage) and
+`b98833b8338b66d435cdbffa480ba2b59c005a2e` (`jolt-lang/http-client` v0.0.10,
+including interruptible reads and its later framing, byte-pipeline, address,
+and pollfd fixes).
+
+Consumers that already declare `jolt-lang/http-client` must move that coordinate
+to the same casselc URL and exact SHA when enabling OTel. Do not retain the old
+upstream checkout or downgrade to OTel's former fork revision: either produces
+two possible sources for the same `jolt.http.*` namespaces, and the latter loses
+prompt blocked-read cancellation. The `:consumer-resolution` alias in this
+repository is the executable model of that migration.
 
 Pull requests and `main` are tested on hosted Linux with the released Jolt
 v0.8.3 binary. The workflow pins the Jolt source revision, installer checksum,
