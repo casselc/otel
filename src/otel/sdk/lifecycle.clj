@@ -57,7 +57,11 @@
                 interrupted? (or interrupted? interrupt-now?)
                 remaining-ns (- deadline (System/nanoTime))]
             (when interrupt-now?
-              (swap! state update :worker-interrupt-count (fnil inc 0))
+              (swap! state
+                     (fn [current]
+                       (-> current
+                           (assoc :shutdown-cancelled? true)
+                           (update :worker-interrupt-count (fnil inc 0)))))
               (.interrupt worker))
             (when-not (pos? remaining-ns)
               (throw (ex-info "export worker did not terminate after cancellation"

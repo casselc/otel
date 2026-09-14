@@ -121,6 +121,20 @@
       (when worker-owned?
         (swap! state assoc :worker-export-active? false)))))
 
+(defn- fail-queued-after-cancellation!
+  "Retire accepted batches without starting another export after shutdown has
+  cancelled the owning worker. They remain explicit attempted/failed delivery,
+  not silent drops."
+  [state]
+  (swap! state
+         (fn [current]
+           (let [span-count (count (:queue current))]
+             (-> current
+                 (assoc :queue [])
+                 (update :attempted-span-count + span-count)
+                 (update :failed-span-count + span-count)))))
+  false)
+
 (defn- drain!
   "Export everything queued and retain scalar delivery evidence for its owner."
   [exporter state batch-size worker-owned?]
@@ -141,7 +155,9 @@
                                  :exported-span-count
                                  :failed-span-count)
                                + span-count))))
-          (recur (and exported? ok)))))))
+          (if (and worker-owned? (:shutdown-cancelled? @state))
+            (fail-queued-after-cancellation! state)
+            (recur (and exported? ok))))))))
 
 (def ^:private shutdown-poll-ms
   "How often the worker checks for shutdown while waiting out its export interval.
@@ -253,6 +269,7 @@
   ([exporter opts]
    (let [config (checked-batch-config opts)
          state (atom {:queue [] :dropped 0 :shutdown? false
+                      :shutdown-cancelled? false
                       :worker-export-active? false :worker-interrupt-count 0
                       :attempted-span-count 0
                       :exported-span-count 0

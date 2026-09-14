@@ -137,8 +137,14 @@
         (is (map? request)
             (str "collector must consume the complete OTLP POST before "
                  "withholding its response: " request)))
-      (is (await! #(= 1 (count (memory/spans healthy-delegate))) 3000)
+      ;; Two more accepted batches remain behind the in-flight request. Once
+      ;; shutdown cancels that owned request they must be accounted failed
+      ;; without entering two fresh blocking POSTs.
+      (trace/with-span [span tracer "queued-1"])
+      (trace/with-span [span tracer "queued-2"])
+      (is (await! #(= 3 (count (memory/spans healthy-delegate))) 3000)
           "the independent healthy queue exports while OTLP is stalled")
+      (is (= 2 (export/queue-size remote-processor)))
       (is (:worker-export-active? @(:state remote-processor))
           "the selected remote worker must own exporter I/O")
 
@@ -166,6 +172,13 @@
       (is (= 1 (:worker-interrupt-count @(:state remote-processor))))
       (is (zero? (:worker-interrupt-count @(:state healthy-processor)))
           "the healthy sibling worker is never interrupted")
+      (is (= {:queue-size 0
+              :attempted-span-count 3
+              :exported-span-count 0
+              :failed-span-count 3
+              :dropped-count 0}
+             (export/batch-processor-stats remote-processor))
+          "cancelled queued batches are explicit failures without new POSTs")
 
       (testing "cleanup and terminal results are exactly once"
         (let [first-result @shutdown-result]

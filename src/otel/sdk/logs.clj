@@ -91,7 +91,10 @@
     (let [batch (take-batch! state batch-size)]
       (if (empty? batch)
         ok
-        (recur (and (export-quietly! exporter state batch worker-owned?) ok))))))
+        (let [exported? (export-quietly! exporter state batch worker-owned?)]
+          (if (and worker-owned? (:shutdown-cancelled? @state))
+            (do (swap! state assoc :queue []) false)
+            (recur (and exported? ok))))))))
 
 (defrecord BatchLogProcessor [exporter state config worker terminal]
   export/SpanProcessor
@@ -129,6 +132,7 @@
   ([exporter opts]
    (let [config (merge default-batch-config opts)
          state (atom {:queue [] :dropped 0 :shutdown? false
+                      :shutdown-cancelled? false
                       :worker-export-active? false :worker-interrupt-count 0})
          worker (Thread.
                   (fn []

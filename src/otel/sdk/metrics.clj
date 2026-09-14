@@ -319,6 +319,7 @@
   ([provider exporter opts]
    (let [config (merge default-reader-config opts)
          state (atom {:shutdown? false
+                      :shutdown-cancelled? false
                       :worker-export-active? false :worker-interrupt-count 0})
          worker (Thread.
                   (fn []

@@ -95,8 +95,11 @@ The corrected model requires:
 
 The runtime cancellation companion additionally requires admission retirement
 before interruption, exact worker/export-owner identity, no sibling interrupt,
-and no exporter close after the bounded wait fails. Force-flush is deliberately
-outside that cancellation transition and retains transport timeout semantics.
+no exporter close after the bounded wait fails, and explicit span-delivery
+failed accounting without a new export for accepted batches behind a cancelled
+operation. Other batch pipelines likewise start no new export.
+Force-flush is deliberately outside that cancellation transition and retains
+transport timeout semantics.
 
 Four mutation modules isolate the assumptions that previously escaped the
 external-call-only Hegel history:

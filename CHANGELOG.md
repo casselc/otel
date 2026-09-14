@@ -8,7 +8,10 @@
   still owns exporter I/O, and requires termination within a further 2,000 ms
   before exporter close. Healthy sibling workers are not interrupted, bounded
   join failure leaves the exporter open, and an interrupted OTLP POST remains a
-  failed non-replayed delivery with per-destination lifecycle results.
+  failed non-replayed delivery with per-destination lifecycle results. Accepted
+  span batches behind a cancelled in-flight export are counted as attempted
+  failures without starting another request; other batch pipelines likewise
+  start no new export.
 
 - Converge OTLP transport on `casselc/http-client`
   merge commit `eab6b78d5957f88690faf6768360572a3f185341`, whose parents are

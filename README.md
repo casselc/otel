@@ -108,7 +108,9 @@ caller performing force-flush, is never interrupted by another destination's
 shutdown. Failure to establish worker termination is a shared terminal failure
 and leaves the exporter open; a bounded join is not treated as quiescence.
 Force-flush retains its existing exporter/request timeout and result semantics
-and does not initiate cancellation.
+and does not initiate cancellation. Once shutdown cancellation begins, queued
+span batches are accounted as failed without starting another export on that
+destination; the other batch pipelines likewise start no new export.
 
 The executable [shutdown ownership model](formal/quint/shutdown-lifecycle.md)
 documents the shared worker/exporter state machine, its abstraction boundary,
