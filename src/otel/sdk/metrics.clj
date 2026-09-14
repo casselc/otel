@@ -266,18 +266,32 @@
   {:interval-ms 60000})
 
 (defn- collect-and-export!
-  [provider exporter]
+  [provider exporter state worker-owned?]
+  (when worker-owned?
+    (swap! state assoc :worker-export-active? true))
   (try
-    (let [collected (collect! provider)]
+    (let [collected (collect! provider)
+          metrics (mapcat :metrics collected)]
       ;; An empty collection is skipped: the OTLP spec allows an empty envelope
       ;; but there is nothing to learn from one, and a collector counts it as a
       ;; request either way.
-      (when (seq (mapcat :metrics collected))
-        (export/export-metrics! exporter (:resource provider) collected)))
+      (when (seq metrics)
+        (let [exported? (boolean
+                         (export/export-metrics! exporter
+                                                 (:resource provider)
+                                                 collected))]
+          (when (and worker-owned? (not exported?))
+            (swap! state assoc :worker-export-failed? true))
+          exported?)))
     (catch :default e
       (binding [*out* *err*]
         (println "otel: metric collection failed:" (ex-message e)))
-      false)))
+      (when worker-owned?
+        (swap! state assoc :worker-export-failed? true))
+      false)
+    (finally
+      (when worker-owned?
+        (swap! state assoc :worker-export-active? false)))))
 
 (defrecord PeriodicReader [provider exporter config state worker terminal]
   export/SpanProcessor
@@ -292,19 +306,21 @@
     (locking state
       (if (:shutdown? @state)
         false
-        (boolean (collect-and-export! provider exporter)))))
+        (boolean (collect-and-export! provider exporter state false)))))
   (shutdown! [this]
     (lifecycle/run-terminal!
       terminal
       (fn []
-        ;; Serialize the acceptance boundary with both scheduled and explicit
-        ;; collections. The final collection covers everything recorded before
-        ;; shutdown; later force-flush calls are rejected.
-        (locking state
-          (swap! state assoc :shutdown? true)
-          (collect-and-export! provider exporter))
-        (lifecycle/await-worker! worker)
-        (export/shutdown-metric-exporter! exporter)))))
+        ;; Retire collection first. The worker owns one final collection, so an
+        ;; in-flight or shutdown drain can be cancelled without interrupting a
+        ;; caller-owned force-flush or releasing the exporter early.
+        (swap! state assoc :shutdown? true)
+        (lifecycle/await-owned-worker! worker state)
+        (let [close-value (export/shutdown-metric-exporter! exporter)]
+          (if (or (:worker-export-failed? @state)
+                  (:shutdown-cancelled? @state))
+            false
+            close-value))))))
 
 (defn periodic-reader
   "Collect every instrument on an interval and hand the result to `exporter`.
@@ -315,7 +331,10 @@
   ([provider exporter] (periodic-reader provider exporter {}))
   ([provider exporter opts]
    (let [config (merge default-reader-config opts)
-         state (atom {:shutdown? false})
+         state (atom {:shutdown? false
+                      :shutdown-cancelled? false
+                      :worker-export-failed? false
+                      :worker-export-active? false :worker-interrupt-count 0})
          worker (Thread.
                   (fn []
                     (loop []
@@ -326,11 +345,18 @@
                           (let [slice (min 50 remaining)]
                             (Thread/sleep slice)
                             (recur (- remaining slice)))))
-                      (when-not (:shutdown? @state)
+                      ;; Exit only after a collection that began with retirement
+                      ;; already visible. If shutdown races immediately after a
+                      ;; scheduled collection, recur once without sleeping and
+                      ;; collect the measurements accepted before retirement.
+                      ;; The final export stays on this owned worker, where
+                      ;; shutdown can cancel it safely.
+                      (let [retired-before-collection? (:shutdown? @state)]
                         (locking state
-                          (when-not (:shutdown? @state)
-                            (collect-and-export! provider exporter)))
-                        (recur)))))]
+                          (collect-and-export! provider exporter state true))
+                        (when-not (or retired-before-collection?
+                                      (:shutdown-cancelled? @state))
+                          (recur))))))]
      (.setDaemon worker true)
      (.start worker)
      (->PeriodicReader provider exporter config state worker

@@ -26,6 +26,7 @@
     otel.sdk.logs-test
     otel.sdk.metrics-test
     otel.sdk.sampler-test
+    otel.sdk.shutdown-cancellation-test
     otel.sdk.tracer-test
     otel.id-test
     otel.exporter.otlp-test

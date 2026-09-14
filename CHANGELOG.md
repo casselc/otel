@@ -8,6 +8,22 @@
   misreported as a dropped top-level attribute, and caller-provided internal
   count metadata remains untrusted.
 
+- Make owned batch shutdown promptly cancellable without changing force-flush:
+  after retiring admission, each span/log processor or metric reader grants a
+  250 ms cooperative grace, interrupts only its own worker while that worker
+  still owns exporter I/O, and requires termination within a further 2,000 ms
+  before exporter close. Healthy sibling workers are not interrupted, bounded
+  join failure leaves the exporter open, and an interrupted OTLP POST remains a
+  failed non-replayed delivery with per-destination lifecycle results. Accepted
+  span batches behind a cancelled in-flight export are counted as attempted
+  failures without starting another request; other batch pipelines likewise
+  start no new export. Log and metric readers persist an owned export failure
+  through shutdown so a successful close cannot replace the failed delivery.
+  A sent owned interrupt is conservatively a failed destination result even
+  when the exporter clears interruption and returns true.
+  Metric retirement now requires a worker-owned final collection, closing the
+   race that could lose a measurement accepted after the last scheduled snapshot.
+
 - Converge OTLP transport on `casselc/http-client`
   merge commit `eab6b78d5957f88690faf6768360572a3f185341`, whose parents are
   prior `main` `8e8f8f2268fd8625116f9b9a7e4766d65ffd218a` and reviewed provider
