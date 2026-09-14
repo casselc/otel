@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Converge OTLP transport on `casselc/http-client`
+  merge commit `eab6b78d5957f88690faf6768360572a3f185341`, whose parents are
+  prior `main` `8e8f8f2268fd8625116f9b9a7e4766d65ffd218a` and reviewed provider
+  head `89e2084598bd485dfc81268f67ee1cff5b723aa0`. The provider head descends
+  from append-only integration merge `8f449006eb8c679755fa1dae6aeb933cfb51211c` of request-aspect
+  fork parent `9cb5801e8c5929387715aa6713c33b2c21fd9a2a` and
+  `jolt-lang/http-client` v0.0.10 parent
+  `b98833b8338b66d435cdbffa480ba2b59c005a2e`. Samizdat-style consumer graph
+  tests require one shared source root for every `jolt.http.*` namespace and a
+  discoverable exact-one request manifest; a hermetic stalled peer verifies
+  that thread interruption returns within the provider's read slice rather
+  than the socket timeout. The minimum Jolt runtime is now 0.8.1. OTel's public
+  API and OTLP wire behavior are unchanged.
+  Complete framed TLS responses do not wait for shutdown, while incomplete or
+  close-delimited responses reject a raw close without `close_notify`.
+
 - Retain bounded scalar delivery counts for batch span processors so a failed
   background export remains visible through later per-destination force-flush
   and shutdown results. Healthy pipelines continue independently, and no

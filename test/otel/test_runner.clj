@@ -29,6 +29,7 @@
     otel.sdk.tracer-test
     otel.id-test
     otel.exporter.otlp-test
+    otel.http-provider-test
     otel.otlp.encode-test
     otel.otlp.http-receiver-test
     otel.otlp.signal-decode-test
