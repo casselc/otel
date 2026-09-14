@@ -156,6 +156,19 @@
   (flush-exporter! [_] true)
   (shutdown-exporter! [_] (swap! shutdown-calls inc) true))
 
+(defrecord ForceFlushBarrierMetricExporter
+  [entered release export-calls close-started shutdown-calls]
+  export/MetricExporter
+  (export-metrics! [_ _ _]
+    (when (= 1 (swap! export-calls inc))
+      (deliver entered true)
+      @release)
+    true)
+  (shutdown-metric-exporter! [_]
+    (deliver close-started true)
+    (swap! shutdown-calls inc)
+    true))
+
 (defn- named-processor [pipelines destination]
   (some (fn [[name processor]]
           (when (= destination name) processor))
@@ -504,3 +517,49 @@
           (.interrupt thread)
           (.join thread 2000)
           (try (sdk-tracer/shutdown! provider) (catch Throwable _ nil)))))))
+
+(deftest metric-shutdown-serializes-with-caller-owned-force-flush
+  (let [entered (promise)
+        release (promise)
+        export-calls (atom 0)
+        close-started (promise)
+        shutdowns (atom 0)
+        exporter (->ForceFlushBarrierMetricExporter
+                  entered release export-calls close-started shutdowns)
+        provider (sdk-metrics/meter-provider {:resource resource/empty-resource})
+        meter (sdk-metrics/get-meter provider {:name "force-flush.race"})
+        counter (metric-api/counter meter "requests")
+        reader (sdk-metrics/periodic-reader provider exporter
+                                            {:interval-ms 60000})
+        flush-result (promise)
+        flush-thread (Thread. #(deliver flush-result
+                                        (export/force-flush! reader)))
+        shutdown-result (promise)
+        shutdown-thread (Thread. #(deliver shutdown-result
+                                           (export/shutdown! reader)))]
+    (try
+      (metric-api/add! counter 1)
+      (.start flush-thread)
+      (is (= true (deref entered 3000 ::not-entered))
+          "caller force-flush passed the shutdown check and entered exporter I/O")
+      (.start shutdown-thread)
+      (is (await! #(:shutdown? @(:state reader)) 1000))
+      (is (= ::not-closed (deref close-started 100 ::not-closed))
+          "shutdown cannot close while caller-owned exporter I/O holds the monitor")
+      (deliver release true)
+      (is (true? (deref flush-result 2000 ::still-blocked)))
+      (is (true? (deref shutdown-result 3000 ::still-blocked)))
+      (is (= true (deref close-started 100 ::not-closed)))
+      (is (>= @export-calls 2)
+          "the owned final collection also completes before exporter close")
+      (is (= 1 @shutdowns))
+      (is (true? (export/shutdown! reader)))
+      (is (= 1 @shutdowns) "the metric exporter closes exactly once")
+      (finally
+        (deliver release true)
+        (.interrupt flush-thread)
+        (.interrupt shutdown-thread)
+        (.join flush-thread 2000)
+        (.join shutdown-thread 2000)
+        (try (export/shutdown! reader) (catch Throwable _ nil))
+        (try (sdk-metrics/shutdown! provider) (catch Throwable _ nil))))))
