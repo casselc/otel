@@ -37,12 +37,14 @@ two-clock design exists to avoid, and a quiet degradation would make every span
 duration wrong in a way nothing downstream could detect.
 
 The HTTP provider is `casselc/http-client` at
-`8f449006eb8c679755fa1dae6aeb933cfb51211c`. That append-only merge has parents
+`bea258938011026c1ea372006373b445454520ab`. It descends from integration merge
+`8f449006eb8c679755fa1dae6aeb933cfb51211c`, whose parents are
 `9cb5801e8c5929387715aa6713c33b2c21fd9a2a` (the request-aspect, relative
 redirect, and canonical-provider lineage) and
 `b98833b8338b66d435cdbffa480ba2b59c005a2e` (`jolt-lang/http-client` v0.0.10,
 including interruptible reads and its later framing, byte-pipeline, address,
-and pollfd fixes).
+and pollfd fixes). The head adds the fail-closed, request-received cancellation
+gate used to qualify that merge.
 
 Consumers that already declare `jolt-lang/http-client` must move that coordinate
 to the same casselc URL and exact SHA when enabling OTel. Do not retain the old
