@@ -37,7 +37,7 @@ two-clock design exists to avoid, and a quiet degradation would make every span
 duration wrong in a way nothing downstream could detect.
 
 The HTTP provider is `casselc/http-client` at
-`565d5d38ce77cdca68996a31048a481106952cba`. It descends from integration merge
+`e77cba3bc4ea0e421d4e107383ba09ffa4294837`. It descends from integration merge
 `8f449006eb8c679755fa1dae6aeb933cfb51211c`, whose parents are
 `9cb5801e8c5929387715aa6713c33b2c21fd9a2a` (the request-aspect, relative
 redirect, and canonical-provider lineage) and

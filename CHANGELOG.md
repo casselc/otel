@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Converge OTLP transport on `casselc/http-client`
-  `565d5d38ce77cdca68996a31048a481106952cba`, which descends from append-only
+  `e77cba3bc4ea0e421d4e107383ba09ffa4294837`, which descends from append-only
   integration merge `8f449006eb8c679755fa1dae6aeb933cfb51211c` of request-aspect
   fork parent `9cb5801e8c5929387715aa6713c33b2c21fd9a2a` and
   `jolt-lang/http-client` v0.0.10 parent
