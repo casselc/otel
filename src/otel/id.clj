@@ -13,7 +13,8 @@
   and a backend would splice unrelated requests into one trace. OS entropy is
   also the cheaper of the two here: one `RAND_bytes` call costs about a
   microsecond, well under the cost of the span it identifies."
-  (:require [jolt.crypto :as crypto]))
+  (:require [jolt.crypto :as crypto]
+            [jolt.host :as host]))
 
 (def invalid-trace-id "00000000000000000000000000000000")
 (def invalid-span-id  "0000000000000000")
@@ -32,10 +33,12 @@
 
 (defn- fallback-bytes
   "Process-varying bytes for a host without OpenSSL. Weaker than OS entropy —
-  a clock and a counter are guessable — but it keeps ids distinct across
-  processes, which is the property a trace id actually depends on."
+  host time and a counter are guessable — but it keeps ids distinct across
+  processes, which is the property a trace id actually depends on. The
+  supported Jolt floor provides `wall-nanos`; if that host primitive fails,
+  generation fails closed rather than substituting a repeatable zero seed."
   [n]
-  (let [now (try (jolt.host/wall-nanos) (catch :default _ 0))
+  (let [now (host/wall-nanos)
         seed (bit-xor now (* 2654435761 (swap! counter inc)))
         out (byte-array n)]
     (dotimes [i n]
@@ -101,3 +104,33 @@
   (loop []
     (let [s (random-hex 8)]
       (if (= s invalid-span-id) (recur) s))))
+
+;; --- injectable generation --------------------------------------------------
+
+(defprotocol IdGenerator
+  "Generates the trace and span identifiers stamped onto new spans.
+
+  `generate-trace-id` returns `{:id string :random? boolean}`. The provenance
+  bit describes that particular trace id and controls the W3C random trace-id
+  flag; deterministic replay generators must return false. `generate-span-id`
+  returns the span-id string directly because the W3C flag describes only the
+  trace id. The SDK validates every generated value before sampling or context
+  construction."
+  (generate-trace-id [generator]
+    "A generated trace id and its random provenance.")
+  (generate-span-id [generator]
+    "A generated span id."))
+
+(defrecord OsEntropyIdGenerator []
+  IdGenerator
+  (generate-trace-id [_]
+    ;; A host without RAND_bytes uses the documented uniqueness fallback. Its
+    ;; ids remain valid but must not claim cryptographic random provenance.
+    {:id (trace-id) :random? os-entropy?})
+  (generate-span-id [_] (span-id)))
+
+(def default-id-generator
+  "The production generator. It uses the existing OS-entropy path and reports
+  whether that path, rather than the uniqueness-only fallback, produced a root
+  trace id."
+  (->OsEntropyIdGenerator))
