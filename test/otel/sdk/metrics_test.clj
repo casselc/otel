@@ -111,6 +111,34 @@
         (is (contains? point :flags))
         (is (= 1 (:dropped-attributes-count point)))))))
 
+(deftest dropped-count-metadata-never-fragments-an-attribute-series
+  (let [{:keys [provider meter]} (setup)
+        counter (api/counter meter "requests")
+        histogram (api/histogram meter "latency" {:boundaries [5.0]})
+        observable (api/observable-gauge
+                    meter "temperature"
+                    (fn [observer]
+                      (api/observe! observer 10 {:kept 1 :rejected nil})
+                      (api/observe! observer 20
+                                    {:kept 1 :rejected-a nil
+                                     :rejected-b nil})))]
+    (api/add! counter 2 {:kept 1 :rejected nil})
+    (api/add! counter 3 {:kept 1 :rejected-a nil :rejected-b nil})
+    (api/record! histogram 2 {:kept 1 :rejected nil})
+    (api/record! histogram 4 {:kept 1 :rejected-a nil :rejected-b nil})
+    (let [sum-points (:data-points (metric-named provider "requests"))
+          histogram-points (:data-points (metric-named provider "latency"))
+          async-points (:data-points (metric-named provider "temperature"))]
+      (doseq [points [sum-points histogram-points async-points]]
+        (is (= 1 (count points)))
+        (is (= {"kept" 1} (:attributes (first points))))
+        (is (= 2 (:dropped-attributes-count (first points)))))
+      (is (= 5 (:value (first sum-points))))
+      (is (= 2 (:count (first histogram-points))))
+      (is (= 6.0 (:sum (first histogram-points))))
+      (is (= 20 (:value (first async-points)))
+          "duplicate async attributes retain last value without duplicate points"))))
+
 ;; --- histograms -------------------------------------------------------------
 
 (deftest histogram-aggregates-a-distribution

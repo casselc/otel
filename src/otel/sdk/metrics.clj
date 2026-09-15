@@ -43,7 +43,19 @@
    :max nil
    :bucket-counts (vec (repeat (inc (clojure.core/count boundaries)) 0))})
 
-(defn- record-histogram [cell boundaries v]
+(defn- retained-dropped-count [cell dropped-count]
+  ;; A data point is identified by its kept attributes. If several measurements
+  ;; collapse to that same identity, retain the greatest observed loss: summing
+  ;; would misreport repeated measurements as distinct dropped attributes, while
+  ;; last-wins would make the diagnostic depend on recording order.
+  (max (or (:dropped-attributes-count cell) 0) dropped-count))
+
+(defn- with-retained-dropped-count [cell dropped-count]
+  (let [retained (retained-dropped-count cell dropped-count)]
+    (cond-> cell
+      (pos? retained) (assoc :dropped-attributes-count retained))))
+
+(defn- record-histogram [cell boundaries v dropped-count]
   (let [v (double v)
         i (bucket-index boundaries v)]
     (-> (or cell (empty-histogram boundaries))
@@ -51,22 +63,27 @@
         (update :sum + v)
         (update :min (fn [m] (if (or (nil? m) (< v m)) v m)))
         (update :max (fn [m] (if (or (nil? m) (> v m)) v m)))
-        (update-in [:bucket-counts i] inc))))
+        (update-in [:bucket-counts i] inc)
+        (with-retained-dropped-count dropped-count))))
 
 ;; --- instruments ------------------------------------------------------------
 
 ;; Every instrument is the same shape: a descriptor plus an atom of
 ;; attribute-set -> cell. The kind decides how a measurement folds into a cell
 ;; and how a cell is later rendered as a metric point.
-(defn- point-identity [attrs]
+(defn- point-attributes [attrs]
   (let [{:keys [attributes dropped-count]}
         (attr/normalize-result attrs attr/default-limits)]
-    (cond-> {:attributes attributes
-             ;; SDK-produced points have no reason to set a data-point flag,
-             ;; but zero is still an explicit part of their canonical shape.
-             :flags 0}
-      (pos? dropped-count)
-      (assoc :dropped-attributes-count dropped-count))))
+    [attributes dropped-count]))
+
+(defn- update-number-cell [cell v dropped-count]
+  (-> (or cell {:value 0})
+      (update :value + v)
+      (with-retained-dropped-count dropped-count)))
+
+(defn- update-gauge-cell [cell v dropped-count]
+  (-> (assoc (or cell {}) :value v)
+      (with-retained-dropped-count dropped-count)))
 
 (defrecord SdkInstrument [kind name description unit boundaries monotonic? callback state clock]
   api/Counter
@@ -79,32 +96,37 @@
       (binding [*out* *err*]
         (println "otel: ignoring negative add to counter" name)))
     (when-not (neg? v)
-      (swap! state update (point-identity attrs) (fnil + 0) v))
+      (let [[attributes dropped-count] (point-attributes attrs)]
+        (swap! state update attributes update-number-cell v dropped-count)))
     this)
 
   api/UpDownCounter
   (add-delta! [this v] (api/add-delta! this v {}))
   (add-delta! [this v attrs]
-    (swap! state update (point-identity attrs) (fnil + 0) v)
+    (let [[attributes dropped-count] (point-attributes attrs)]
+      (swap! state update attributes update-number-cell v dropped-count))
     this)
 
   api/Histogram
   (record! [this v] (api/record! this v {}))
   (record! [this v attrs]
-    (swap! state update (point-identity attrs) record-histogram boundaries v)
+    (let [[attributes dropped-count] (point-attributes attrs)]
+      (swap! state update attributes record-histogram boundaries v dropped-count))
     this)
 
   api/Gauge
   (set-value! [this v] (api/set-value! this v {}))
   (set-value! [this v attrs]
-    (swap! state assoc (point-identity attrs) v)
+    (let [[attributes dropped-count] (point-attributes attrs)]
+      (swap! state update attributes update-gauge-cell v dropped-count))
     this))
 
 (defrecord CollectingObserver [state]
   api/Observer
   (observe! [this v] (api/observe! this v {}))
   (observe! [this v attrs]
-    (swap! state assoc (point-identity attrs) v)
+    (let [[attributes dropped-count] (point-attributes attrs)]
+      (swap! state update attributes update-gauge-cell v dropped-count))
     this))
 
 (defn- observe-async!
@@ -122,8 +144,15 @@
 
 ;; --- collection -------------------------------------------------------------
 
-(defn- point-common [point start now]
-  (assoc point :start-time-unix-nano start :time-unix-nano now))
+(defn- point-common [attributes cell start now]
+  (cond-> {:attributes attributes
+           ;; SDK-produced points have no reason to set a data-point flag,
+           ;; but zero is still an explicit part of their canonical shape.
+           :flags 0
+           :start-time-unix-nano start
+           :time-unix-nano now}
+    (pos? (or (:dropped-attributes-count cell) 0))
+    (assoc :dropped-attributes-count (:dropped-attributes-count cell))))
 
 (defn- instrument->metric
   [inst start now temporality]
@@ -140,15 +169,21 @@
              ;; temporality is always cumulative regardless of configuration —
              ;; there is no delta to compute from a single observation.
              :temporality (if (:callback inst) :cumulative temporality)
-             :data-points (mapv (fn [[point v]] (assoc (point-common point start now) :value v)) cells))
+             :data-points (mapv (fn [[attributes cell]]
+                                  (assoc (point-common attributes cell start now)
+                                         :value (:value cell)))
+                                cells))
 
       (:gauge :observable-gauge)
       (assoc base
              :type :gauge
-             :data-points (mapv (fn [[point v]]
+             :data-points (mapv (fn [[attributes cell]]
                                   ;; A gauge point has no start time: it describes
                                   ;; an instant, not an interval.
-                                  (assoc point :time-unix-nano now :value v))
+                                  (dissoc
+                                   (assoc (point-common attributes cell start now)
+                                          :value (:value cell))
+                                   :start-time-unix-nano))
                                 cells))
 
       :histogram
@@ -156,8 +191,8 @@
              :type :histogram
              :temporality temporality
              :explicit-bounds (:boundaries inst)
-             :data-points (mapv (fn [[point c]]
-                                  (assoc (point-common point start now)
+             :data-points (mapv (fn [[attributes c]]
+                                  (assoc (point-common attributes c start now)
                                          :count (:count c)
                                          :sum (:sum c)
                                          :min (:min c)

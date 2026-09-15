@@ -42,7 +42,11 @@ dropped counts remain explicit. SDK metric points explicitly carry zero flags;
 decoded wire points preserve the distinction between an absent flag and a
 present zero, and accept the complete unsigned 32-bit flag range. Positive
 point attribute-loss counts survive as `:dropped-attributes-count`, while zero
-remains absent. A malformed flag or point count rejects only its owning point.
+remains absent. Points are identified only by their normalized attribute set.
+When several measurements for one point report different loss counts, the SDK
+retains the maximum: the diagnostic is monotone and order-independent without
+incorrectly summing the same discarded attribute across measurements. A
+malformed flag or point count rejects only its owning point.
 
 This is not a universal round-trip claim. A nil or omitted application log body
 retains the established empty-string representation. Representable log bodies

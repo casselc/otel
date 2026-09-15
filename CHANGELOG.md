@@ -6,7 +6,10 @@
   the distinction between an absent flag and an explicitly present zero, and
   carry positive `droppedAttributesCount` values across SDK gauge, sum, and
   explicit-histogram records plus OTLP JSON encode/decode. SDK measurement
-  attributes are normalized and counted once per point; malformed inbound
+  attributes are normalized and counted once per measurement, and aggregation
+  remains keyed only by the normalized attribute set. If merged measurements
+  report different loss counts, the point retains their maximum rather than
+  fragmenting the series or summing a repeated diagnostic. Malformed inbound
   metadata rejects only that point. Exemplars and reservoirs remain outside
   this slice, and no ClickHouse projection is added.
 
