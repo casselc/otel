@@ -1,6 +1,7 @@
 (ns otel.sdk.metrics-test
   (:require [clojure.test :refer [deftest is testing]]
             [otel.any-value :as any]
+            [otel.attributes :as attributes]
             [otel.instrument.runtime :as runtime]
             [otel.metrics :as api]
             [otel.resource :as res]
@@ -87,6 +88,28 @@
       (is (= 20 (:value (point-for m {}))))
       (testing "a gauge point describes an instant, so it carries no start time"
         (is (nil? (:start-time-unix-nano (point-for m {}))))))))
+
+(deftest every-sdk-point-normalizes-and-counts-attributes-once
+  (let [{:keys [provider meter]} (setup)
+        counter (api/counter meter "requests")
+        gauge (api/gauge meter "temperature")
+        histogram (api/histogram meter "latency" {:boundaries [5.0]})
+        calls (atom 0)
+        normalize attributes/normalize-result]
+    (with-redefs [attributes/normalize-result
+                  (fn [& args]
+                    (swap! calls inc)
+                    (apply normalize args))]
+      (api/add! counter 1 {:kept 1 :rejected nil})
+      (api/set-value! gauge 2 {:kept 1 :rejected nil})
+      (api/record! histogram 3 {:kept 1 :rejected nil})
+      (is (= 3 @calls) "one normalization result per measurement")
+      (doseq [metric (map #(metric-named provider %)
+                          ["requests" "temperature" "latency"])
+              :let [point (point-for metric {"kept" 1})]]
+        (is (= 0 (:flags point)))
+        (is (contains? point :flags))
+        (is (= 1 (:dropped-attributes-count point)))))))
 
 ;; --- histograms -------------------------------------------------------------
 

@@ -58,6 +58,16 @@
 ;; Every instrument is the same shape: a descriptor plus an atom of
 ;; attribute-set -> cell. The kind decides how a measurement folds into a cell
 ;; and how a cell is later rendered as a metric point.
+(defn- point-identity [attrs]
+  (let [{:keys [attributes dropped-count]}
+        (attr/normalize-result attrs attr/default-limits)]
+    (cond-> {:attributes attributes
+             ;; SDK-produced points have no reason to set a data-point flag,
+             ;; but zero is still an explicit part of their canonical shape.
+             :flags 0}
+      (pos? dropped-count)
+      (assoc :dropped-attributes-count dropped-count))))
+
 (defrecord SdkInstrument [kind name description unit boundaries monotonic? callback state clock]
   api/Counter
   (add! [this v] (api/add! this v {}))
@@ -69,32 +79,32 @@
       (binding [*out* *err*]
         (println "otel: ignoring negative add to counter" name)))
     (when-not (neg? v)
-      (swap! state update (attr/normalize attrs) (fnil + 0) v))
+      (swap! state update (point-identity attrs) (fnil + 0) v))
     this)
 
   api/UpDownCounter
   (add-delta! [this v] (api/add-delta! this v {}))
   (add-delta! [this v attrs]
-    (swap! state update (attr/normalize attrs) (fnil + 0) v)
+    (swap! state update (point-identity attrs) (fnil + 0) v)
     this)
 
   api/Histogram
   (record! [this v] (api/record! this v {}))
   (record! [this v attrs]
-    (swap! state update (attr/normalize attrs) record-histogram boundaries v)
+    (swap! state update (point-identity attrs) record-histogram boundaries v)
     this)
 
   api/Gauge
   (set-value! [this v] (api/set-value! this v {}))
   (set-value! [this v attrs]
-    (swap! state assoc (attr/normalize attrs) v)
+    (swap! state assoc (point-identity attrs) v)
     this))
 
 (defrecord CollectingObserver [state]
   api/Observer
   (observe! [this v] (api/observe! this v {}))
   (observe! [this v attrs]
-    (swap! state assoc (attr/normalize attrs) v)
+    (swap! state assoc (point-identity attrs) v)
     this))
 
 (defn- observe-async!
@@ -112,8 +122,8 @@
 
 ;; --- collection -------------------------------------------------------------
 
-(defn- point-common [attrs start now]
-  {:attributes attrs :start-time-unix-nano start :time-unix-nano now})
+(defn- point-common [point start now]
+  (assoc point :start-time-unix-nano start :time-unix-nano now))
 
 (defn- instrument->metric
   [inst start now temporality]
@@ -130,15 +140,15 @@
              ;; temporality is always cumulative regardless of configuration —
              ;; there is no delta to compute from a single observation.
              :temporality (if (:callback inst) :cumulative temporality)
-             :data-points (mapv (fn [[attrs v]] (assoc (point-common attrs start now) :value v)) cells))
+             :data-points (mapv (fn [[point v]] (assoc (point-common point start now) :value v)) cells))
 
       (:gauge :observable-gauge)
       (assoc base
              :type :gauge
-             :data-points (mapv (fn [[attrs v]]
+             :data-points (mapv (fn [[point v]]
                                   ;; A gauge point has no start time: it describes
                                   ;; an instant, not an interval.
-                                  {:attributes attrs :time-unix-nano now :value v})
+                                  (assoc point :time-unix-nano now :value v))
                                 cells))
 
       :histogram
@@ -146,8 +156,8 @@
              :type :histogram
              :temporality temporality
              :explicit-bounds (:boundaries inst)
-             :data-points (mapv (fn [[attrs c]]
-                                  (assoc (point-common attrs start now)
+             :data-points (mapv (fn [[point c]]
+                                  (assoc (point-common point start now)
                                          :count (:count c)
                                          :sum (:sum c)
                                          :min (:min c)

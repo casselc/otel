@@ -139,19 +139,27 @@
   [v]
   (if (integer? v) {:asInt (i64 v)} {:asDouble (double v)}))
 
+(defn- point-metadata [p]
+  (cond-> {}
+    (contains? p :flags) (assoc :flags (:flags p))
+    (pos? (or (:dropped-attributes-count p) 0))
+    (assoc :droppedAttributesCount (:dropped-attributes-count p))))
+
 (defn- number-point [p]
   (cond-> (merge {:timeUnixNano (i64 (:time-unix-nano p))}
-                 (number-value (:value p)))
+                 (number-value (:value p))
+                 (point-metadata p))
     (:start-time-unix-nano p) (assoc :startTimeUnixNano (i64 (:start-time-unix-nano p)))
     (seq (:attributes p)) (assoc :attributes (key-values (:attributes p)))))
 
 (defn- histogram-point [bounds p]
-  (cond-> {:startTimeUnixNano (i64 (:start-time-unix-nano p))
-           :timeUnixNano (i64 (:time-unix-nano p))
-           :count (i64 (:count p))
-           :sum (double (:sum p))
-           :bucketCounts (mapv i64 (:bucket-counts p))
-           :explicitBounds (mapv double bounds)}
+  (cond-> (merge {:startTimeUnixNano (i64 (:start-time-unix-nano p))
+                  :timeUnixNano (i64 (:time-unix-nano p))
+                  :count (i64 (:count p))
+                  :sum (double (:sum p))
+                  :bucketCounts (mapv i64 (:bucket-counts p))
+                  :explicitBounds (mapv double bounds)}
+                 (point-metadata p))
     (seq (:attributes p)) (assoc :attributes (key-values (:attributes p)))
     (some? (:min p)) (assoc :min (double (:min p)))
     (some? (:max p)) (assoc :max (double (:max p)))))

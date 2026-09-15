@@ -178,37 +178,34 @@
 
 ;; --- metrics ----------------------------------------------------------------
 
-(defn- reject-unmodeled-point-fields! [m path]
+(defn- point-common! [m path]
   (let [flags (field m :flags)
-        dropped (field m :droppedAttributesCount)
+        dropped (count-field! :metrics m :droppedAttributesCount path)
         exemplars (field m :exemplars)]
-    (when (and (present? flags) (not (zero? (uint32! :metrics flags (conj path "flags")))))
-      (invalid! :metrics (conj path "flags") :unsupported-point-field
-                "zero flags (the SDK model has no point flags)" flags))
-    (when (and (present? dropped)
-               (pos? (uint32! :metrics dropped (conj path "droppedAttributesCount"))))
-      (invalid! :metrics (conj path "droppedAttributesCount") :unsupported-point-field
-                "zero dropped attributes" dropped))
     (when (present? exemplars)
       (let [xs (array! :metrics exemplars (conj path "exemplars"))]
         (when (seq xs)
           (invalid! :metrics (conj path "exemplars") :unsupported-point-field
-                    "no exemplars (not modeled by this SDK)" xs))))))
+                    "no exemplars (not modeled by this SDK)" xs))))
+    (cond-> {:attributes (attributes! :metrics (field m :attributes)
+                                      (conj path "attributes"))}
+      (present? flags) (assoc :flags
+                              (uint32! :metrics flags (conj path "flags")))
+      (pos? dropped) (assoc :dropped-attributes-count dropped))))
 
 (defn- number-point! [v path]
   (let [m (object! :metrics v path) iv (field m :asInt) dv (field m :asDouble)
         start-v (field m :startTimeUnixNano)
         arms (count (filter present? [iv dv]))]
-    (reject-unmodeled-point-fields! m path)
     (when-not (= 1 arms)
       (invalid! :metrics path :invalid-number-point "exactly one of asInt/asDouble" m))
     (cond->
-     {:attributes (attributes! :metrics (field m :attributes) (conj path "attributes"))
+     (assoc (point-common! m path)
       :time-unix-nano (let [x (field m :timeUnixNano)]
                         (if (present? x) (uint64! :metrics x (conj path "timeUnixNano")) 0))
       :value (if (present? iv)
                (decimal! :metrics iv (conj path "asInt") -9223372036854775808 9223372036854775807)
-               (finite-number! :metrics dv (conj path "asDouble")))}
+               (finite-number! :metrics dv (conj path "asDouble"))))
       (present? start-v)
       (assoc :start-time-unix-nano
              (uint64! :metrics start-v (conj path "startTimeUnixNano"))))))
@@ -224,7 +221,6 @@
         bounds (if (present? bounds-v) (number-array! bounds-v (conj path "explicitBounds")) [])
         buckets (if (present? buckets-v) (uint-array! buckets-v (conj path "bucketCounts")) [])
         count-v (field m :count) sum-v (field m :sum)]
-    (reject-unmodeled-point-fields! m path)
     (when-not (= (inc (count bounds)) (count buckets))
       (invalid! :metrics path :invalid-histogram-buckets
                 "bucketCounts width = explicitBounds width + 1" buckets))
@@ -239,16 +235,16 @@
       (when-not (= count (reduce + 0 buckets))
         (invalid! :metrics path :invalid-histogram-count
                   "count equal to the sum of bucketCounts" count)))
-    {:attributes (attributes! :metrics (field m :attributes) (conj path "attributes"))
-     :start-time-unix-nano (let [x (field m :startTimeUnixNano)]
-                             (if (present? x) (uint64! :metrics x (conj path "startTimeUnixNano")) 0))
-     :time-unix-nano (let [x (field m :timeUnixNano)]
-                       (if (present? x) (uint64! :metrics x (conj path "timeUnixNano")) 0))
-     :count (if (present? count-v) (uint64! :metrics count-v (conj path "count")) 0)
-     :sum (finite-number! :metrics sum-v (conj path "sum"))
-     :min (let [x (field m :min)] (when (present? x) (finite-number! :metrics x (conj path "min"))))
-     :max (let [x (field m :max)] (when (present? x) (finite-number! :metrics x (conj path "max"))))
-     :bucket-counts buckets :explicit-bounds bounds}))
+    (assoc (point-common! m path)
+           :start-time-unix-nano (let [x (field m :startTimeUnixNano)]
+                                   (if (present? x) (uint64! :metrics x (conj path "startTimeUnixNano")) 0))
+           :time-unix-nano (let [x (field m :timeUnixNano)]
+                             (if (present? x) (uint64! :metrics x (conj path "timeUnixNano")) 0))
+           :count (if (present? count-v) (uint64! :metrics count-v (conj path "count")) 0)
+           :sum (finite-number! :metrics sum-v (conj path "sum"))
+           :min (let [x (field m :min)] (when (present? x) (finite-number! :metrics x (conj path "min"))))
+           :max (let [x (field m :max)] (when (present? x) (finite-number! :metrics x (conj path "max"))))
+           :bucket-counts buckets :explicit-bounds bounds)))
 (def ^:private temporalities {1 :delta 2 :cumulative
                                "AGGREGATION_TEMPORALITY_DELTA" :delta
                                "AGGREGATION_TEMPORALITY_CUMULATIVE" :cumulative})
