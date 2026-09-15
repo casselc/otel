@@ -1,5 +1,6 @@
 (ns otel.id-test
   (:require [clojure.test :refer [deftest is testing]]
+            [jolt.host :as host]
             [otel.id :as id]))
 
 (deftest trace-id-shape
@@ -86,3 +87,12 @@
                 (repeatedly 50 id/trace-id))]
       (is (every? id/valid-trace-id? ids))
       (is (= 50 (count (distinct ids)))))))
+
+(deftest fallback-generation-fails-closed-without-host-time
+  (with-redefs [id/os-entropy? false
+                host/wall-nanos
+                (fn [] (throw (ex-info "host time unavailable" {})))]
+    (is (thrown-with-msg? Exception #"host time unavailable"
+                          (id/trace-id)))
+    (is (thrown-with-msg? Exception #"host time unavailable"
+                          (id/span-id)))))

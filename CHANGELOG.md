@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Allow tracer providers to use an explicit ID generator for deterministic
+  replay while retaining OS entropy by default. Generated root trace IDs carry
+  per-ID random provenance, so the W3C random flag is set only for random IDs;
+  children inherit their parent's provenance, and invalid IDs fail before
+  sampling or context construction. The no-OpenSSL uniqueness fallback now
+  depends explicitly on supported host time and fails closed if it is
+  unavailable rather than substituting a repeatable zero seed.
+
 - Preserve metric data-point flags as exact unsigned 32-bit values, including
   the distinction between an absent flag and an explicitly present zero, and
   carry positive `droppedAttributesCount` values across SDK gauge, sum, and

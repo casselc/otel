@@ -8,6 +8,7 @@
             [otel.resource :as res]
             [otel.sdk.clock :as clock]
             [otel.sdk.export :as export]
+            [otel.sdk.lifecycle :as lifecycle]
             [otel.sdk.sampler :as sampler]
             [otel.sdk.tracer :as sdk]
             [otel.trace :as trace]))
@@ -308,6 +309,164 @@
     (trace/with-span [sp tracer "op"]
       (is (= (trace/span-context-of sp) (trace/current-span-context))))
     (is (not (trace/valid? (trace/current-span-context))))))
+
+;; --- id generation ----------------------------------------------------------
+
+(defn- seq-id-generator
+  "An injectable generator with per-trace random provenance and observable
+  call order. `trace-results` are `{:id string :random? boolean}` maps."
+  [trace-results span-ids]
+  (let [traces (atom trace-results)
+        spans (atom span-ids)
+        calls (atom [])]
+    {:calls calls
+     :generator
+     (reify id/IdGenerator
+       (generate-trace-id [_]
+         (swap! calls conj :trace)
+         (let [[value & more] @traces]
+           (reset! traces more)
+           value))
+       (generate-span-id [_]
+         (swap! calls conj :span)
+         (let [[value & more] @spans]
+           (reset! spans more)
+           value)))}))
+
+(defn- ex-data-of [f]
+  (try (f) nil (catch :default error (ex-data error))))
+
+(deftest deterministic-root-ids-do-not-claim-random-provenance
+  (let [{:keys [generator calls]}
+        (seq-id-generator [{:id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                            :random? false}]
+                          ["1111111111111111"])
+        {:keys [tracer exporter]} (setup {:id-generator generator})]
+    (trace/with-span [sp tracer "deterministic-root"])
+    (let [context (:span-context (first (memory/spans exporter)))]
+      (is (= "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" (:trace-id context)))
+      (is (= "1111111111111111" (:span-id context)))
+      (is (zero? (bit-and trace/flag-random (:trace-flags context))))
+      (is (= [:trace :span] @calls)))))
+
+(deftest os-entropy-root-ids-carry-random-provenance
+  (let [{:keys [provider tracer exporter]} (setup)]
+    (trace/with-span [sp tracer "random-root"])
+    (is (instance? id/OsEntropyIdGenerator (:id-generator provider)))
+    (is (= trace/flag-random
+           (bit-and trace/flag-random
+                    (get-in (first (memory/spans exporter))
+                            [:span-context :trace-flags]))))))
+
+(deftest uniqueness-fallback-does-not-claim-random-provenance
+  (with-redefs [id/os-entropy? false]
+    (let [{:keys [tracer exporter]} (setup)]
+      (trace/with-span [sp tracer "fallback-root"])
+      (let [context (:span-context (first (memory/spans exporter)))]
+        (is (id/valid-trace-id? (:trace-id context)))
+        (is (zero? (bit-and trace/flag-random (:trace-flags context))))))))
+
+(deftest children-inherit-parent-random-provenance-without-generating-a-trace-id
+  (doseq [[parent-random? generated-random?]
+          [[true false] [false true]]]
+    (let [{:keys [generator calls]}
+          (seq-id-generator [{:id "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                              :random? generated-random?}]
+                            ["2222222222222222"])
+          {:keys [tracer]} (setup {:id-generator generator})
+          parent (trace/span-context
+                  {:trace-id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                   :span-id "1111111111111111"
+                   :trace-flags (if parent-random? trace/flag-random 0)
+                   :remote? true})
+          parent-context (trace/context-with-span
+                          ctx/root (trace/non-recording-span parent))
+          child (trace/start-span tracer "child" {:parent parent-context})]
+      (is (= (if parent-random? trace/flag-random 0)
+             (bit-and trace/flag-random
+                      (:trace-flags (trace/span-context-of child)))))
+      (is (= [:span] @calls)
+          "a child inherits trace-id provenance and does not consume a root id"))))
+
+(deftest invalid-generator-configuration-and-results-fail-closed
+  (doseq [invalid [false {} (fn [] "not a protocol")]]
+    (is (= :otel.sdk.tracer/invalid-id-generator
+           (:type (ex-data-of #(setup {:id-generator invalid}))))))
+  (doseq [[trace-results span-ids expected-kind expected-reason]
+          [[[{:id id/invalid-trace-id :random? false}]
+            ["1111111111111111"] :trace :invalid-id]
+           [[{:id "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" :random? true}]
+            ["1111111111111111"] :trace :invalid-id]
+           [[{:id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]
+            ["1111111111111111"] :trace :invalid-random-provenance]
+           [[{:id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" :random? :maybe}]
+            ["1111111111111111"] :trace :invalid-random-provenance]
+           [[{:id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" :random? false}]
+            [id/invalid-span-id] :span :invalid-id]
+           [[{:id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" :random? false}]
+            ["short"] :span :invalid-id]]]
+    (let [{:keys [generator]} (seq-id-generator trace-results span-ids)
+          {:keys [tracer]} (setup {:id-generator generator})
+          data (ex-data-of #(trace/start-span tracer "invalid"))]
+      (is (= :otel.sdk.tracer/invalid-generated-id (:type data)))
+      (is (= expected-kind (:id-kind data)))
+      (is (= expected-reason (:reason data)))))
+  (let [provider (sdk/->SdkTracerProvider
+                  (res/resource {:service.name "legacy"})
+                  sampler/default-sampler
+                  nil
+                  (clock/anchored (clock/fake-clock))
+                  (export/composite-processor [])
+                  (atom false)
+                  (lifecycle/terminal-action))
+        tracer (sdk/get-tracer provider {:name "legacy"})
+        sp (trace/start-span tracer "legacy")]
+    (is (trace/valid? (trace/span-context-of sp)))
+    (trace/end! sp)))
+
+(deftest shutdown-waits-for-in-flight-id-generation-and-prevents-later-generation
+  (let [generation-entered (promise)
+        release-generation (promise)
+        shutdown-started (promise)
+        shutdown-entered (promise)
+        calls (atom [])
+        generator
+        (reify id/IdGenerator
+          (generate-trace-id [_]
+            (swap! calls conj :trace)
+            (deliver generation-entered true)
+            @release-generation
+            {:id "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" :random? false})
+          (generate-span-id [_]
+            (swap! calls conj :span)
+            "1111111111111111"))
+        processor
+        (reify export/SpanProcessor
+          (on-start [_ _ _] nil)
+          (on-end [_ _] nil)
+          (force-flush! [_] true)
+          (shutdown! [_] (deliver shutdown-entered true) true))
+        provider (sdk/tracer-provider
+                  {:resource res/empty-resource
+                   :processors [processor]
+                   :id-generator generator})
+        tracer (sdk/get-tracer provider {:name "concurrency"})
+        start-future (future (trace/start-span tracer "in-flight"))]
+    (is (= true (deref generation-entered 5000 ::timeout)))
+    (let [shutdown-future
+          (future
+            (deliver shutdown-started true)
+            (sdk/shutdown! provider))]
+      (is (= true (deref shutdown-started 5000 ::timeout)))
+      (is (= ::blocked (deref shutdown-entered 100 ::blocked))
+          "shutdown cannot retire the provider while generation owns its lock")
+      (deliver release-generation true)
+      (is (trace/recording? (deref start-future 5000 ::timeout)))
+      (is (= true (deref shutdown-entered 5000 ::timeout)))
+      (is (not= ::timeout (deref shutdown-future 5000 ::timeout)))
+      (is (not (trace/recording? (trace/start-span tracer "after-shutdown"))))
+      (is (= [:trace :span] @calls)
+          "post-shutdown spans do not consult an application generator"))))
 
 ;; --- sampling ---------------------------------------------------------------
 
