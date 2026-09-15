@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Preserve metric data-point flags as exact unsigned 32-bit values, including
+  the distinction between an absent flag and an explicitly present zero, and
+  carry positive `droppedAttributesCount` values across SDK gauge, sum, and
+  explicit-histogram records plus OTLP JSON encode/decode. SDK measurement
+  attributes are normalized and counted once per measurement, and aggregation
+  remains keyed only by the normalized attribute set. If merged measurements
+  report different loss counts, the point retains their maximum rather than
+  fragmenting the series or summing a repeated diagnostic. Malformed inbound
+  metadata rejects only that point. Exemplars and reservoirs remain outside
+  this slice, and no ClickHouse projection is added.
+
 - Preserve log-record attribute losses reported by the shared bounded
   normalizer as canonical `droppedAttributesCount` across direct SDK export and
   OTLP JSON relay. Zero remains omitted, recursive value truncation is not

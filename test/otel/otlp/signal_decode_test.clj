@@ -147,10 +147,11 @@
                 :attributes {"scope.integer" 42 :dropped nil}})
         sum (metrics/counter meter "requests")
         gauge (metrics/gauge meter "temperature")
-        histogram (metrics/histogram meter "latency" {:boundaries [5.0]})]
-    (metrics/add! sum 42 typed-attributes)
-    (metrics/set-value! gauge 1.5 typed-attributes)
-    (metrics/record! histogram 3.0 typed-attributes)
+        histogram (metrics/histogram meter "latency" {:boundaries [5.0]})
+        point-input-attributes (assoc typed-attributes "rejected" nil)]
+    (metrics/add! sum 42 point-input-attributes)
+    (metrics/set-value! gauge 1.5 point-input-attributes)
+    (metrics/record! histogram 3.0 point-input-attributes)
     (let [collected (vec (sdk-metrics/collect! provider))
           direct {:resource resource :collected collected}
           result (decode/decode-metrics
@@ -164,9 +165,45 @@
       (is (= direct relayed))
       (is (= #{:gauge :sum :histogram} (set (map :type metrics))))
       (is (= typed-attributes (:attributes gauge-point)))
+      (is (= 0 (:flags gauge-point)))
+      (is (contains? gauge-point :flags))
+      (doseq [metric metrics
+              point (:data-points metric)]
+        (is (= 0 (:flags point)))
+        (is (= 1 (:dropped-attributes-count point))))
       (is (not (contains? (:attributes gauge-point) "absent")))
       (is (not (contains? gauge-point :start-time-unix-nano)))
       (is (= 1 (get-in relayed [:collected 0 :scope
                                 :dropped-attributes-count])))
       (is (not (contains? (:resource relayed)
                           :dropped-attributes-count))))))
+
+(deftest metric-point-metadata-preserves-presence-and-partially-rejects-malformed-siblings
+  (let [points [{:timeUnixNano "1" :asInt "1"}
+                {:timeUnixNano "2" :asInt "2" :flags 0
+                 :droppedAttributesCount 0}
+                {:timeUnixNano "3" :asInt "3" :flags 4294967295
+                 :droppedAttributesCount 4294967295}
+                {:timeUnixNano "4" :asInt "4" :flags 4294967296}
+                {:timeUnixNano "5" :asInt "5"
+                 :droppedAttributesCount "not-an-integer"}]
+        request {:resourceMetrics
+                 [{:scopeMetrics
+                   [{:metrics
+                     [{:name "points" :gauge {:dataPoints points}}]}]}]}
+        result (decode/decode-metrics request)
+        decoded (get-in result [:collections 0 :collected 0 :metrics 0
+                                :data-points])]
+    (is (= 2 (:rejected-data-points result)))
+    (is (= [1 2 3] (mapv :value decoded)))
+    (is (not (contains? (first decoded) :flags)))
+    (is (= 0 (:flags (second decoded))))
+    (is (contains? (second decoded) :flags))
+    (is (not (contains? (second decoded) :dropped-attributes-count)))
+    (is (= 4294967295 (:flags (nth decoded 2))))
+    (is (= 4294967295 (:dropped-attributes-count (nth decoded 2))))
+    (is (= [["resourceMetrics" 0 "scopeMetrics" 0 "metrics" 0 "gauge"
+             "dataPoints" 3 "flags"]
+            ["resourceMetrics" 0 "scopeMetrics" 0 "metrics" 0 "gauge"
+             "dataPoints" 4 "droppedAttributesCount"]]
+           (mapv :path (:errors result))))))

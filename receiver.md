@@ -38,7 +38,15 @@ Within the current canonical domain, SDK log records and gauge, sum, and
 explicit-histogram collections compare equal before encoding and after decoding.
 Absent correlation fields and gauge start times remain absent, and default-zero
 dropped counts remain absent from resources, scopes, and logs. Positive wire
-dropped counts remain explicit.
+dropped counts remain explicit. SDK metric points explicitly carry zero flags;
+decoded wire points preserve the distinction between an absent flag and a
+present zero, and accept the complete unsigned 32-bit flag range. Positive
+point attribute-loss counts survive as `:dropped-attributes-count`, while zero
+remains absent. Points are identified only by their normalized attribute set.
+When several measurements for one point report different loss counts, the SDK
+retains the maximum: the diagnostic is monotone and order-independent without
+incorrectly summing the same discarded attribute across measurements. A
+malformed flag or point count rejects only its owning point.
 
 This is not a universal round-trip claim. A nil or omitted application log body
 retains the established empty-string representation. Representable log bodies
@@ -48,9 +56,8 @@ retain the documented readable string fallback for compatibility. Metric
 values outside signed int64,
 non-finite values, and integer histogram boundaries are outside exact record
 equality: OTLP constrains integer points and represents bounds as doubles.
-Exemplars, non-zero point flags, and point dropped-attribute counts are not
-modeled by this SDK and remain explicit receiver rejections rather than invented
-defaults.
+Exemplars and exemplar reservoirs are not modeled by this SDK and remain
+explicit receiver rejections rather than invented defaults.
 
 Neither namespace is an HTTP server or JSON parser. The complete receiver
 stack owns, in this order:

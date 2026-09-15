@@ -63,6 +63,32 @@
 (deftest key-values-shape
   (is (= [{:key "a" :value {:intValue "1"}}] (enc/key-values {"a" 1}))))
 
+(deftest metric-point-flags-and-dropped-counts-encode-as-exact-uint32-values
+  (let [metric {:name "points" :type :gauge
+                :data-points [{:attributes {} :time-unix-nano 1 :value 1}
+                              {:attributes {} :time-unix-nano 2 :value 2 :flags 0}
+                              {:attributes {} :time-unix-nano 3 :value 3
+                               :flags 4294967295
+                               :dropped-attributes-count 4294967295}]}
+        points (get-in (enc/metric->otlp metric) [:gauge :dataPoints])]
+    (is (not (contains? (first points) :flags)))
+    (is (= 0 (:flags (second points))))
+    (is (contains? (second points) :flags))
+    (is (= 4294967295 (:flags (nth points 2))))
+    (is (= 4294967295 (:droppedAttributesCount (nth points 2))))
+    (is (not (contains? (second points) :droppedAttributesCount))))
+  (let [point (get-in
+               (enc/metric->otlp
+                {:name "histogram" :type :histogram :temporality :cumulative
+                 :explicit-bounds [5.0]
+                 :data-points [{:attributes {} :start-time-unix-nano 1
+                                :time-unix-nano 2 :count 1 :sum 3.0
+                                :min 3.0 :max 3.0 :bucket-counts [1 0]
+                                :flags 7 :dropped-attributes-count 2}]})
+               [:histogram :dataPoints 0])]
+    (is (= 7 (:flags point)))
+    (is (= 2 (:droppedAttributesCount point)))))
+
 ;; --- span encoding ----------------------------------------------------------
 
 (defn- export-one
