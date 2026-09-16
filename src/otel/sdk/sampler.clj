@@ -83,7 +83,16 @@
   them as signed (rather than unsigned) matches the reference SDKs, so the same
   trace id decides identically in a Java, Go or Jolt service."
   [trace-id]
-  (let [v (Long/parseLong (subs trace-id 16 32) 16)]
+  ;; Chunk parsers permit a leading sign; a trace-ID low half never does.
+  ;; Reject malformed low halves without retaining their contents in errors.
+  (when-not (re-matches #"[0-9A-Fa-f]{16}" (subs trace-id 16 32))
+    (throw (ex-info "Invalid trace ID low half"
+                    {:type ::invalid-trace-id-low-half})))
+  ;; Each unsigned 32-bit half fits signed Long parsing on both Jolt and JVM.
+  ;; Promoting arithmetic reconstructs all 64 bits before signed conversion.
+  (let [high (Long/parseLong (subs trace-id 16 24) 16)
+        low (Long/parseLong (subs trace-id 24 32) 16)
+        v (+' (*' high 4294967296) low)]
     (if (>= v two-63) (- v two-64) v)))
 
 (defrecord TraceIdRatio [ratio upper-bound]

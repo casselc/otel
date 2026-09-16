@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Parse ratio-sampler trace-ID halves using two signed-Long-safe 32-bit chunks
+  and exact reconstruction, preserving all signed 64-bit sampling decisions.
+  This removes reliance on permissive out-of-range `Long/parseLong` behavior;
+  ratio formulas and endpoint semantics are unchanged.
+  Malformed low halves, including internal chunk signs, reject with a fixed
+  safe diagnostic; this is not an expanded full trace-ID validation policy.
+
 - Canonicalize histogram boundaries to finite doubles before instrument
   registration and reject unordered, duplicate or precision-colliding bounds
   without publishing an instrument. Nil retains the default boundaries and an
