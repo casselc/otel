@@ -139,6 +139,76 @@
       (is (= 20 (:value (first async-points)))
           "duplicate async attributes retain last value without duplicate points"))))
 
+(deftest invalid-synchronous-sum-measurements-do-not-touch-series-or-attributes
+  (let [overflow (/ (reduce *' 1N (repeat 40 10000000000N)) 3)]
+    (doseq [[constructor record] [[api/counter api/add!]
+                                 [api/up-down-counter api/add-delta!]]
+            v [##NaN ##Inf ##-Inf nil false "not-a-number" {:private "fixture"} overflow]]
+      (let [{:keys [provider meter]} (setup)
+            instrument (constructor meter "finite-sum")
+            calls (atom 0)
+            normalize attributes/normalize-result]
+        (record instrument 5 {"series" "kept"})
+        (let [before @(:state instrument)]
+          (with-redefs [attributes/normalize-result
+                        (fn [& args] (swap! calls inc) (apply normalize args))]
+            (doseq [attrs [{"series" "kept"} {"series" "fresh"}]]
+              (let [result (try {:returned (record instrument v attrs)}
+                                (catch Throwable _ {:threw true}))]
+                (is (not (:threw result)))
+                (is (identical? instrument (:returned result)))))
+            (is (zero? @calls)))
+          (is (= before @(:state instrument))))
+        (record instrument 7 {"series" "kept"})
+        (let [m (metric-named provider "finite-sum")]
+          (is (= 1 (count (:data-points m))))
+          (is (= 12 (:value (point-for m {"series" "kept"})))))))))
+
+(deftest negative-finite-counter-adds-retain-rejection-and-fluent-return
+  (doseq [v [-1 -1/2 -1.5M]]
+    (let [{:keys [meter]} (setup)
+          counter (api/counter meter "negative-counter")
+          calls (atom 0)
+          normalize attributes/normalize-result]
+      (api/add! counter 5 {"series" "kept"})
+      (let [before @(:state counter)]
+        (with-redefs [attributes/normalize-result
+                      (fn [& args] (swap! calls inc) (apply normalize args))]
+          (doseq [attrs [{"series" "kept"} {"series" "fresh"}]]
+            (is (identical? counter (api/add! counter v attrs))))
+          (is (zero? @calls)))
+        (is (= before @(:state counter)))))))
+
+(deftest synchronous-sums-retain-existing-finite-number-domains
+  (doseq [[constructor record signed?] [[api/counter api/add! false]
+                                       [api/up-down-counter api/add-delta! true]]
+          v (cond-> [0 9007199254740993 9223372036854775807
+                     (reduce *' 1N (repeat 40 10000000000N))
+                     1/2 1.5M 0.0 -0.0 4.9e-324 1.7976931348623157e308]
+              signed? (conj -2 -1/2 -1.5M))]
+    ;; Independent cells avoid finite aggregate overflow. Huge integers retain
+    ;; the existing SDK arithmetic domain; their OTLP Int64 admission is separate.
+    (let [{:keys [provider meter]} (setup)
+          instrument (constructor meter "accepted-sum")]
+      (is (identical? instrument (record instrument v)))
+      (let [actual (:value (point-for (metric-named provider "accepted-sum") {}))]
+        (if (integer? v)
+          (do (is (integer? actual)) (is (= v actual)))
+          (is (== v actual)))))))
+
+(deftest rejected-synchronous-sum-inputs-preserve-temporality-and-sign-policy
+  (doseq [temporality [:cumulative :delta]
+          [constructor record delta] [[api/counter api/add! 2]
+                                       [api/up-down-counter api/add-delta! -2]]]
+    (let [{:keys [provider meter]} (setup {:temporality temporality})
+          instrument (constructor meter "temporal-sum")]
+      (record instrument 5)
+      (doseq [bad [##NaN ##Inf ##-Inf]] (record instrument bad))
+      (is (= 5 (:value (point-for (metric-named provider "temporal-sum") {}))))
+      (record instrument delta)
+      (is (= (if (= temporality :delta) delta (+ 5 delta))
+             (:value (point-for (metric-named provider "temporal-sum") {})))))))
+
 ;; --- histograms -------------------------------------------------------------
 
 (deftest invalid-histogram-measurements-do-not-touch-series-or-attributes

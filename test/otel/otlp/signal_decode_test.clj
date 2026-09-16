@@ -242,6 +242,33 @@
       (is (= {:resource resource/empty-resource :collected collected}
              (first (:collections decoded)))))))
 
+(deftest rejected-synchronous-sums-preserve-maintained-json-round-trip
+  (let [provider (sdk-metrics/meter-provider
+                  {:resource resource/empty-resource
+                   :clock (clock/fake-clock)})
+        meter (sdk-metrics/get-meter provider {:name "finite-sums"})
+        counter (metrics/counter meter "counter")
+        signed (metrics/up-down-counter meter "signed")]
+    (metrics/add! counter 9007199254740993 {"series" "kept"})
+    (metrics/add-delta! signed -7 {"series" "kept"})
+    (doseq [v [##NaN ##Inf ##-Inf]
+            attrs [{"series" "kept"} {"series" "fresh"}]]
+      (metrics/add! counter v attrs)
+      (metrics/add-delta! signed v attrs))
+    (let [collected (vec (sdk-metrics/collect! provider))
+          result (try
+                   {:decoded (decode/decode-metrics
+                               (data-json/read-str
+                                (json/write-str
+                                 (encode/metrics-request resource/empty-resource collected))
+                                :key-fn keyword))}
+                   (catch Throwable _ {:threw true}))]
+      (is (not (:threw result)))
+      (is (= 0 (get-in result [:decoded :rejected-data-points])))
+      (is (empty? (get-in result [:decoded :errors])))
+      (is (= {:resource resource/empty-resource :collected collected}
+             (first (get-in result [:decoded :collections])))))))
+
 (deftest malformed-histogram-boundaries-reject-only-the-owning-point
   (doseq [bounds [[1 1] [2 1] [0.0 -0.0]
                   [9007199254740992 9007199254740993]

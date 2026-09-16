@@ -96,26 +96,38 @@
         (when (and (== d d) (not= d ##Inf) (not= d ##-Inf)) d))
       (catch Throwable _ nil))))
 
+(defn- finite-sum-admission? [v]
+  ;; Preserve integer and other accepted numeric values for aggregation. The
+  ;; double conversion is only a finite-domain probe, not a coercion of v.
+  ;; Aggregate overflow and Int64 wire representability are separate domains.
+  (or (integer? v)
+      (and (number? v)
+           (try
+             (let [d (double v)]
+               (and (== d d) (not= d ##Inf) (not= d ##-Inf)))
+             (catch Throwable _ false)))))
+
 (defrecord SdkInstrument [kind name description unit boundaries monotonic? callback state clock]
   api/Counter
   (add! [this v] (api/add! this v {}))
   (add! [this v attrs]
-    (when (neg? v)
+    (when (finite-sum-admission? v)
       ;; The spec says a negative add to a monotonic counter is a caller error.
       ;; Ignoring it (loudly) beats corrupting the series or throwing into the
       ;; application, since a counter that goes down is unrepresentable downstream.
-      (binding [*out* *err*]
-        (println "otel: ignoring negative add to counter" name)))
-    (when-not (neg? v)
-      (let [[attributes dropped-count] (point-attributes attrs)]
-        (swap! state update attributes update-number-cell v dropped-count)))
+      (if (neg? v)
+        (binding [*out* *err*]
+          (println "otel: ignoring negative add to counter" name))
+        (let [[attributes dropped-count] (point-attributes attrs)]
+          (swap! state update attributes update-number-cell v dropped-count))))
     this)
 
   api/UpDownCounter
   (add-delta! [this v] (api/add-delta! this v {}))
   (add-delta! [this v attrs]
-    (let [[attributes dropped-count] (point-attributes attrs)]
-      (swap! state update attributes update-number-cell v dropped-count))
+    (when (finite-sum-admission? v)
+      (let [[attributes dropped-count] (point-attributes attrs)]
+        (swap! state update attributes update-number-cell v dropped-count)))
     this)
 
   api/Histogram

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Ignore non-numeric or non-finite synchronous counter/up-down counter inputs
+  before attribute normalization or series mutation (Refs #3). Preserve original
+  accepted numeric values, negative-counter warnings and signed up/down adds.
+  Int64 wire representability and aggregate overflow remain separate domains.
+
 - Ignore non-numeric or non-finite histogram measurements before attribute
   normalization or series mutation, preserving convertible finite numbers and
   existing negative-value behavior (Refs #3). This histogram-only guard does
