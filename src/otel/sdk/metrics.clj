@@ -243,7 +243,7 @@
         supplied (if (nil? boundaries) default-boundaries boundaries)]
     (when-not (sequential? supplied) (invalid! :invalid-shape))
     (let [canonical (mapv (fn [value]
-                            (when-not (or (integer? value) (float? value))
+                            (when-not (number? value)
                               (invalid! :invalid-type))
                             (let [d (double value)]
                               (when-not (and (== d d) (not= d ##Inf) (not= d ##-Inf))

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Preserve numeric histogram boundaries, including ratios and decimals, while
+  validating their finite, strictly ordered double wire representation before
+  registration (Refs #3). Precision collisions and overflow still reject
+  without publishing an instrument; nil defaults and empty bounds are unchanged.
+
 - Ignore non-numeric or non-finite synchronous counter/up-down counter inputs
   before attribute normalization or series mutation (Refs #3). Preserve original
   accepted numeric values, negative-counter warnings and signed up/down adds.

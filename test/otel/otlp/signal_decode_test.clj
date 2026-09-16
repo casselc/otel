@@ -181,10 +181,15 @@
                           :dropped-attributes-count))))))
 
 (deftest canonical-histogram-boundaries-preserve-collection-through-otlp
-  (doseq [[bounds expected-buckets]
-          [[[0 1] [2 1 1]] [[-2.5 0 1.5] [1 1 1 1]]
-           [[1] [3 1]] [[] [4]]
-           [nil (into [2 2] (repeat (dec (count sdk-metrics/default-boundaries)) 0))]]]
+  (doseq [[bounds expected-bounds expected-buckets]
+          [[[0 1] [0.0 1.0] [2 1 1]]
+           [[-2.5 0 1.5] [-2.5 0.0 1.5] [1 1 1 1]]
+           [[(/ -3 2) (/ 1 2)] [-1.5 0.5] [1 1 2]]
+           [[(bigdec "-1.5") (bigdec "0.5")] [-1.5 0.5] [1 1 2]]
+           [[-2 (/ -1 2) (bigdec "0.5") 2.0] [-2.0 -0.5 0.5 2.0] [1 0 1 2 0]]
+           [[1] [1.0] [3 1]] [[] [] [4]]
+           [nil sdk-metrics/default-boundaries
+            (into [2 2] (repeat (dec (count sdk-metrics/default-boundaries)) 0))]]]
     (let [provider (sdk-metrics/meter-provider
                     {:resource resource/empty-resource
                      :clock (clock/fake-clock {:wall 1000 :mono 0})})
@@ -207,6 +212,7 @@
         (is (= 0 (:rejected-data-points result)))
         (is (empty? (:errors result)))
         (is (= direct relayed))
+        (is (= expected-bounds (:explicit-bounds metric)))
         (is (every? float? (:explicit-bounds metric)))
         (is (every? #(and (== % %) (not= % ##Inf) (not= % ##-Inf))
                     (:explicit-bounds metric)))
