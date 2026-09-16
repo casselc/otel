@@ -1,10 +1,12 @@
 (ns otel.otlp.signal-decode-test
   (:require [clojure.test :refer [deftest is]]
+            [clojure.data.json :as data-json]
             [otel.any-value :as any]
             [otel.exporter.memory :as memory]
             [otel.logs :as logs]
             [otel.metrics :as metrics]
             [otel.otlp.encode :as encode]
+            [otel.otlp.json :as json]
             [otel.otlp.signal-decode :as decode]
             [otel.resource :as resource]
             [otel.sdk.clock :as clock]
@@ -177,6 +179,61 @@
                                 :dropped-attributes-count])))
       (is (not (contains? (:resource relayed)
                           :dropped-attributes-count))))))
+
+(deftest canonical-histogram-boundaries-preserve-collection-through-otlp
+  (doseq [[bounds expected-buckets]
+          [[[0 1] [2 1 1]] [[-2.5 0 1.5] [1 1 1 1]]
+           [[1] [3 1]] [[] [4]]
+           [nil (into [2 2] (repeat (dec (count sdk-metrics/default-boundaries)) 0))]]]
+    (let [provider (sdk-metrics/meter-provider
+                    {:resource resource/empty-resource
+                     :clock (clock/fake-clock {:wall 1000 :mono 0})})
+          meter (sdk-metrics/get-meter provider {:name "boundaries"})
+          histogram (metrics/histogram meter "distribution" {:boundaries bounds})]
+      (doseq [v [-3 0 1 2]] (metrics/record! histogram v))
+      (let [collected (vec (sdk-metrics/collect! provider))
+            request (encode/metrics-request resource/empty-resource collected)
+            encoded (json/write-str request)
+            parsed (data-json/read-str encoded :key-fn keyword)
+            result (decode/decode-metrics parsed)
+            direct {:resource resource/empty-resource :collected collected}
+            relayed (first (:collections result))
+            metric (get-in relayed [:collected 0 :metrics 0])
+            point (first (:data-points metric))]
+        ;; Exercise the maintained writer/parser wire path, not just an
+        ;; encoder-object shortcut. Integer JSON parsing keeps its defaults.
+        (is (string? encoded))
+        (is (pos? (count encoded)))
+        (is (= 0 (:rejected-data-points result)))
+        (is (empty? (:errors result)))
+        (is (= direct relayed))
+        (is (every? float? (:explicit-bounds metric)))
+        (is (every? #(and (== % %) (not= % ##Inf) (not= % ##-Inf))
+                    (:explicit-bounds metric)))
+        (is (= expected-buckets (:bucket-counts point)))
+        (is (= (inc (count (:explicit-bounds metric))) (count (:bucket-counts point))))
+        (is (= 4 (:count point) (reduce + (:bucket-counts point))))))))
+
+(deftest malformed-histogram-boundaries-reject-only-the-owning-point
+  (doseq [bounds [[1 1] [2 1] [0.0 -0.0]
+                  [9007199254740992 9007199254740993]
+                  [##NaN] [##Inf] [##-Inf]]]
+    (let [point {:startTimeUnixNano "0" :timeUnixNano "1"
+                 :count "1" :sum 1.0 :bucketCounts ["1" "0"]
+                 :explicitBounds [1.0]}
+          invalid (assoc point :explicitBounds bounds
+                         :bucketCounts (into ["1"] (repeat (count bounds) "0")))
+          request {:resourceMetrics
+                   [{:scopeMetrics [{:metrics
+                     [{:name "distribution" :histogram
+                       {:aggregationTemporality 2 :dataPoints [invalid point]}}]}]}]}
+          result (decode/decode-metrics request)
+          metric (get-in result [:collections 0 :collected 0 :metrics 0])]
+      (is (= 1 (:rejected-data-points result)))
+      (is (= 1 (count (:errors result))))
+      (is (= [1.0] (:explicit-bounds metric)))
+      (is (= [1 0] (get-in metric [:data-points 0 :bucket-counts])))
+      (is (= 1 (count (:data-points metric)))))))
 
 (deftest metric-point-metadata-preserves-presence-and-partially-rejects-malformed-siblings
   (let [points [{:timeUnixNano "1" :asInt "1"}

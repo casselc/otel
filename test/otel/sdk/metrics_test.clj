@@ -171,6 +171,49 @@
 
 ;; --- asynchronous instruments -----------------------------------------------
 
+(deftest histogram-boundaries-canonicalize-before-registration
+  (doseq [[supplied expected measurements buckets]
+          [[[0 1] [0.0 1.0] [-1 0 0.5 1 2] [2 2 1]]
+           [[-2.5 0.0 1.5] [-2.5 0.0 1.5] [-3 -2.5 0 1.5 2] [2 1 1 1]]
+           [[1] [1.0] [0 1 2] [2 1]]
+           [[] [] [-1 0 1] [3]]
+           [nil sdk/default-boundaries [1] nil]]]
+    (let [{:keys [provider meter]} (setup)
+          h (api/histogram meter "canonical" {:boundaries supplied})]
+      (doseq [v measurements] (api/record! h v))
+      (let [m (metric-named provider "canonical") p (point-for m {})]
+        (is (= expected (:explicit-bounds m)))
+        (is (every? float? (:explicit-bounds m)))
+        (is (= (inc (count expected)) (count (:bucket-counts p))))
+        (is (= (count measurements) (:count p) (reduce + (:bucket-counts p))))
+        (when buckets (is (= buckets (:bucket-counts p))))))))
+
+(deftest invalid-histogram-boundaries-never-publish-an-instrument
+  (doseq [[supplied reason]
+          [[[1 1] :not-increasing] [[2 1] :not-increasing]
+           [[0.0 -0.0] :not-increasing]
+           [[9007199254740992 9007199254740993] :not-increasing]
+           [[##NaN] :nonfinite] [[##Inf] :nonfinite] [[##-Inf] :nonfinite]
+           [[(reduce *' 1N (repeat 40 10000000000N))] :nonfinite]
+           [["secret-bearing-invalid-bound"] :invalid-type]
+           [[nil] :invalid-type] [[false] :invalid-type]
+           ["secret-bearing-invalid-envelope" :invalid-shape]
+           [{} :invalid-shape]]]
+    (let [{:keys [provider meter]} (setup)
+          prior (api/histogram meter "prior" {:boundaries [1]})
+          before @(:instruments meter)
+          error (try (api/histogram meter "invalid" {:boundaries supplied}) nil
+                     (catch Throwable error error))]
+      (is (some? error))
+      (is (= {:type :otel.sdk.metrics/invalid-histogram-boundaries :reason reason}
+             (ex-data error)))
+      (is (= "Invalid histogram boundaries" (ex-message error)))
+      (is (nil? (ex-cause error)))
+      (is (= (count before) (count @(:instruments meter))))
+      (is (every? true? (map identical? before @(:instruments meter))))
+      (api/record! prior 1)
+      (is (= [1 0] (:bucket-counts (point-for (metric-named provider "prior") {})))))))
+
 (deftest observable-gauge-reads-on-collection
   (let [{:keys [provider meter]} (setup)
         current (atom 7)]

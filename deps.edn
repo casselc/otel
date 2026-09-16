@@ -27,7 +27,10 @@
 
            :test {:extra-paths ["test"]
                   :extra-deps
-                  {io.github.chucklehead-dev/jolt-hegel
+                  {org.clojure/data.json
+                   {:git/url "https://github.com/casselc/data.json.git"
+                    :git/sha "932444043c0c06f9e295ba4963419b2481e9dd07"}
+                   io.github.chucklehead-dev/jolt-hegel
                    {:git/url "https://github.com/chucklehead-dev/jolt-hegel.git"
                     ;; Current Jolt uses value-first ffi/write. The prior pin
                     ;; predates that ABI and crashes the receiver properties.

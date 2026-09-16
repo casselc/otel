@@ -209,10 +209,32 @@
 
 ;; --- meter and provider -----------------------------------------------------
 
+(defn- histogram-boundaries [boundaries]
+  ;; OTLP explicit bounds are doubles. Validate their canonical wire domain
+  ;; before publishing an instrument; never sort or collapse invalid buckets.
+  (let [invalid! (fn [reason]
+                   (throw (ex-info "Invalid histogram boundaries"
+                                   {:type ::invalid-histogram-boundaries
+                                    :reason reason})))
+        supplied (if (nil? boundaries) default-boundaries boundaries)]
+    (when-not (sequential? supplied) (invalid! :invalid-shape))
+    (let [canonical (mapv (fn [value]
+                            (when-not (or (integer? value) (float? value))
+                              (invalid! :invalid-type))
+                            (let [d (double value)]
+                              (when-not (and (== d d) (not= d ##Inf) (not= d ##-Inf))
+                                (invalid! :nonfinite))
+                              d)) supplied)]
+      (when-not (or (empty? canonical) (apply < canonical))
+        (invalid! :not-increasing))
+      canonical)))
+
 (defn- register!
   [meter kind nm {:keys [description unit boundaries]} callback]
   (let [inst (->SdkInstrument kind nm description unit
-                              (or boundaries default-boundaries)
+                              (if (= kind :histogram)
+                                (histogram-boundaries boundaries)
+                                (or boundaries default-boundaries))
                               (contains? #{:counter :observable-counter} kind)
                               callback
                               (atom {})

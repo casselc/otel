@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Canonicalize histogram boundaries to finite doubles before instrument
+  registration and reject unordered, duplicate or precision-colliding bounds
+  without publishing an instrument. Nil retains the default boundaries and an
+  explicit empty vector retains one bucket. This aligns SDK collection with
+  the OTLP explicit-bound wire domain (existing metric-domain work in #3).
+
 - Allow tracer providers to use an explicit ID generator for deterministic
   replay while retaining OS entropy by default. Generated root trace IDs carry
   per-ID random provenance, so the W3C random flag is set only for random IDs;
