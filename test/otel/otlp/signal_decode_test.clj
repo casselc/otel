@@ -214,6 +214,34 @@
         (is (= (inc (count (:explicit-bounds metric))) (count (:bucket-counts point))))
         (is (= 4 (:count point) (reduce + (:bucket-counts point))))))))
 
+(deftest rejected-histogram-measurements-preserve-the-real-json-round-trip
+  (let [provider (sdk-metrics/meter-provider
+                  {:resource resource/empty-resource
+                   :clock (clock/fake-clock {:wall 1000 :mono 0})})
+        meter (sdk-metrics/get-meter provider {:name "finite-measurements"})
+        h (metrics/histogram meter "finite" {:boundaries [10]})]
+    (metrics/record! h 5 {"series" "kept"})
+    (doseq [v [##NaN ##Inf ##-Inf]
+            attrs [{"series" "kept"} {"series" "fresh"}]]
+      (metrics/record! h v attrs))
+    (metrics/record! h 7 {"series" "kept"})
+    (let [collected (vec (sdk-metrics/collect! provider))
+          points (-> collected first :metrics first :data-points)
+          encoded (json/write-str (encode/metrics-request resource/empty-resource collected))
+          result (try {:decoded (decode/decode-metrics
+                                 (data-json/read-str encoded :key-fn keyword))}
+                      (catch Throwable _ {:threw true}))
+          decoded (:decoded result)]
+      (is (= 1 (count points)))
+      (is (= [2 0] (:bucket-counts (first points))))
+      (is (= 2 (:count (first points))))
+      (is (== 12.0 (:sum (first points))))
+      (is (not (:threw result)))
+      (is (= 0 (:rejected-data-points decoded)))
+      (is (empty? (:errors decoded)))
+      (is (= {:resource resource/empty-resource :collected collected}
+             (first (:collections decoded)))))))
+
 (deftest malformed-histogram-boundaries-reject-only-the-owning-point
   (doseq [bounds [[1 1] [2 1] [0.0 -0.0]
                   [9007199254740992 9007199254740993]

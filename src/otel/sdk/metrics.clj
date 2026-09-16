@@ -85,6 +85,17 @@
   (-> (assoc (or cell {}) :value v)
       (with-retained-dropped-count dropped-count)))
 
+(defn- finite-histogram-measurement [v]
+  ;; This SDK's explicit-histogram relay supports finite doubles. Ignore invalid
+  ;; measurements before attributes or cells are touched, without logging values.
+  ;; Negative finite measurements retain existing behavior; sum overflow from
+  ;; multiple finite measurements is a separate, currently unqualified domain.
+  (when (number? v)
+    (try
+      (let [d (double v)]
+        (when (and (== d d) (not= d ##Inf) (not= d ##-Inf)) d))
+      (catch Throwable _ nil))))
+
 (defrecord SdkInstrument [kind name description unit boundaries monotonic? callback state clock]
   api/Counter
   (add! [this v] (api/add! this v {}))
@@ -110,8 +121,9 @@
   api/Histogram
   (record! [this v] (api/record! this v {}))
   (record! [this v attrs]
-    (let [[attributes dropped-count] (point-attributes attrs)]
-      (swap! state update attributes record-histogram boundaries v dropped-count))
+    (when-some [d (finite-histogram-measurement v)]
+      (let [[attributes dropped-count] (point-attributes attrs)]
+        (swap! state update attributes record-histogram boundaries d dropped-count)))
     this)
 
   api/Gauge

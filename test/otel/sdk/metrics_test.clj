@@ -141,6 +141,48 @@
 
 ;; --- histograms -------------------------------------------------------------
 
+(deftest invalid-histogram-measurements-do-not-touch-series-or-attributes
+  (doseq [v [##NaN ##Inf ##-Inf nil false "not-a-number" {:private "fixture"}
+             (reduce *' 1N (repeat 40 10000000000N))]]
+    (let [{:keys [provider meter]} (setup)
+          h (api/histogram meter "finite" {:boundaries [10]})
+          calls (atom 0)
+          normalize attributes/normalize-result]
+      (api/record! h 5 {"series" "kept"})
+      (let [before @(:state h)]
+        (with-redefs [attributes/normalize-result
+                      (fn [& args] (swap! calls inc) (apply normalize args))]
+          (doseq [attrs [{"series" "kept"} {"series" "fresh"}]]
+            (let [result (try {:returned (api/record! h v attrs)}
+                              (catch Throwable _ {:threw true}))]
+              (is (not (:threw result)))
+              (is (identical? h (:returned result)))))
+          (is (zero? @calls)))
+        (is (= before @(:state h))))
+      (api/record! h 7 {"series" "kept"})
+      (let [m (metric-named provider "finite")
+            p (point-for m {"series" "kept"})]
+        (is (= 1 (count (:data-points m))))
+        (is (= [2 0] (:bucket-counts p)))
+        (is (= 2 (:count p)))
+        (is (== 12.0 (:sum p)))
+        (is (== 5.0 (:min p)))
+        (is (== 7.0 (:max p)))))))
+
+(deftest finite-histogram-measurements-retain-negative-zero-subnormal-and-endpoint
+  (doseq [[v buckets] [[-1.0 [1 0]] [0.0 [1 0]] [-0.0 [1 0]]
+                        [1/2 [1 0]] [1.5M [1 0]]
+                        [4.9e-324 [1 0]] [10.0 [1 0]] [11.0 [0 1]]
+                        [1.7976931348623157e308 [0 1]]]]
+    ;; Separate cells keep finite-input sum overflow outside this control.
+    (let [{:keys [provider meter]} (setup)
+          h (api/histogram meter "accepted" {:boundaries [10]})]
+      (is (identical? h (api/record! h v)))
+      (let [p (point-for (metric-named provider "accepted") {})]
+        (is (= 1 (:count p)))
+        (is (= buckets (:bucket-counts p)))
+        (is (== (double v) (:sum p) (:min p) (:max p)))))))
+
 (deftest histogram-aggregates-a-distribution
   (let [{:keys [provider meter]} (setup)
         h (api/histogram meter "latency" {:unit "ms" :boundaries [10.0 100.0]})]

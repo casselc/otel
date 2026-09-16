@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Ignore non-numeric or non-finite histogram measurements before attribute
+  normalization or series mutation, preserving convertible finite numbers and
+  existing negative-value behavior (Refs #3). This histogram-only guard does
+  not guarantee against aggregate overflow from multiple finite measurements.
+
 - Parse ratio-sampler trace-ID halves using two signed-Long-safe 32-bit chunks
   and exact reconstruction, preserving all signed 64-bit sampling decisions.
   This removes reliance on permissive out-of-range `Long/parseLong` behavior;
