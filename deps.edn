@@ -1,6 +1,6 @@
 {:paths ["src" "resources"]
 
- :jolt/min-version "0.8.1"
+ :jolt/min-version "0.8.6"
 
  ;; OTLP export goes over casselc/http-client (clj-http-lite on jolt), which
  ;; brings TLS through the system OpenSSL — so an https collector endpoint works

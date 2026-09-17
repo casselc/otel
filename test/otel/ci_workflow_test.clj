@@ -5,6 +5,10 @@
 
 (def ^:private workflow-path ".github/workflows/tests.yml")
 (def ^:private toolchain-path "resources/otel/ci-toolchain.edn")
+(def ^:private deps-path "deps.edn")
+
+(defn- minimum-matches-toolchain? [toolchain deps]
+  (= (get-in toolchain [:jolt :version]) (:jolt/min-version deps)))
 
 (defn- workflow-matches-toolchain?
   [toolchain workflow]
@@ -24,8 +28,8 @@
       (str/includes? workflow
                      (str "uses: actions/checkout@" checkout-revision))
       (not (str/includes? workflow "actions/checkout@v"))
-      (not (str/includes? workflow
-                          "raw.githubusercontent.com/jolt-lang/jolt/v0.8.3")))))
+      (not (re-find #"raw\.githubusercontent\.com/jolt-lang/jolt/(?:v[^/\s]+|main|master)/install"
+                    workflow)))))
 
 (defn- least-privilege-reproducible-workflow?
   [workflow]
@@ -42,8 +46,10 @@
 
 (deftest hosted-workflow-is-pinned-and-reproducible
   (let [toolchain (edn/read-string (slurp toolchain-path))
+        deps (edn/read-string (slurp deps-path))
         workflow (slurp workflow-path)]
     (is (workflow-matches-toolchain? toolchain workflow))
+    (is (minimum-matches-toolchain? toolchain deps))
     (is (least-privilege-reproducible-workflow? workflow))
     (testing "pin, action, and reproducibility drift each turn the guard red"
       (is (not (workflow-matches-toolchain?
@@ -53,6 +59,16 @@
       (is (not (workflow-matches-toolchain?
                  (assoc-in toolchain [:checkout :revision] "v4")
                  workflow)))
+      (is (not (minimum-matches-toolchain?
+                 toolchain (assoc deps :jolt/min-version "0.8.1"))))
+      (is (not (minimum-matches-toolchain?
+                 (assoc-in toolchain [:jolt :version] "0.8.3") deps)))
+      (doseq [mutable-ref [(str "v" (get-in toolchain [:jolt :version]))
+                           "v99.0.0" "main" "master"]]
+        (is (not (workflow-matches-toolchain?
+                   toolchain
+                   (str workflow "\n# raw.githubusercontent.com/jolt-lang/jolt/"
+                        mutable-ref "/install\n")))))
       (is (not (least-privilege-reproducible-workflow?
                  (str/replace workflow "jolt -Srepro -M:test"
                               "jolt -M:test"))))

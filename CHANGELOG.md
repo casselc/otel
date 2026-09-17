@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Require Jolt 0.8.6 or newer and run hosted tests on its checksum-pinned
+  release, with isolated compiler-version caches and matching minimum-version
+  and toolchain checks.
+
 - Preserve numeric histogram boundaries, including ratios and decimals, while
   validating their finite, strictly ordered double wire representation before
   registration (Refs #3). Precision collisions and overflow still reject
