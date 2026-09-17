@@ -9,6 +9,10 @@
 (defprotocol SettlementWitness
   (settlement-status [component]
     "Return a closed ownership witness, never a resource or Throwable.
+    This MUST be a bounded, nonblocking, nonwaiting snapshot observation:
+    never join a worker, await exporter I/O, or start resource operations.
+    The SDK invokes trusted custom witnesses synchronously; this contract is
+    not sandbox isolation or enforcement of foreign implementation latency.
     :quiescence :confirmed declares stable retirement of admission and that
     every owned caller/background resource-using operation has settled, not
     momentary idleness. Implementers must never reopen that admission. An

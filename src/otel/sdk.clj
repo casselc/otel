@@ -254,7 +254,10 @@
   (boolean (some #(some? (get handle %)) shutdown-component-keys)))
 
 (defn shutdown-status
-  "Closed nonblocking ownership evidence for the handle returned by init!.
+  "Closed ownership evidence for the handle returned by init!.
+  Maintained and contract-conforming witnesses observe bounded, nonwaiting
+  snapshots. Trusted custom witnesses are invoked synchronously and MUST obey
+  that contract; this API does not isolate or enforce their execution latency.
   A failed terminal action is not quiescence proof. Both SDK operations and
   exporter resources must be settled. Exporter release must declare literal
   true or supply its own stable retired-settlement witness; failed/void release
