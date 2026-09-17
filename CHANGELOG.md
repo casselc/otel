@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Extend the literate shutdown model with admitted callers, synchronous owners,
+  strict exporter release, trusted stable settlement witnesses, fresh aggregate
+  proof and consumer cleanup ordering. Add deterministic cleanup-bypass and
+  false/nonliteral/thrown-release controls plus a hostile-witness control that
+  exposes the trusted premise. Delivery outcomes remain separate from resource
+  permission; sampled checks do not establish delivery or native persistence.
+  Include the aggregate SDK source in the model workflow's relevant-input
+  triggers so SDK-only settlement changes cannot skip this gate.
+
 - Add a closed `otel.sdk/shutdown-status` ownership witness, separate from
   shutdown success. Maintained processors retire caller export admission and
   track in-flight operations; unknown components remain unconfirmed. The

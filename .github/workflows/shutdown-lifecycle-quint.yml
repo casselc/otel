@@ -7,6 +7,7 @@ on:
       - .github/workflows/shutdown-lifecycle-quint.yml
       - formal/quint/shutdown-lifecycle.md
       - scripts/check-shutdown-lifecycle-quint.sh
+      - src/otel/sdk.clj
       - src/otel/sdk/lifecycle.clj
       - src/otel/sdk/export.clj
       - src/otel/sdk/logs.clj
@@ -19,6 +20,7 @@ on:
       - .github/workflows/shutdown-lifecycle-quint.yml
       - formal/quint/shutdown-lifecycle.md
       - scripts/check-shutdown-lifecycle-quint.sh
+      - src/otel/sdk.clj
       - src/otel/sdk/lifecycle.clj
       - src/otel/sdk/export.clj
       - src/otel/sdk/logs.clj
