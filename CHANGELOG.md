@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add implementation-connected settlement journals for admitted callers,
+  worker completion, strict exporter release and refreshed ownership proof.
+  Observe exactly-once release outcomes without changing values or errors,
+  and require literal-true release or stable retired exporter settlement.
+  Check caller bookkeeping after actual worker completion; the accounting
+  control exposes a component-witness gap, not an unsafe public cleanup path.
+  Separate causal permission controls from the unchanged legacy lifecycle
+  oracle; these observations do not claim admission-CAS linearization.
+
 - Extend the literate shutdown model with admitted callers, synchronous owners,
   strict exporter release, trusted stable settlement witnesses, fresh aggregate
   proof and consumer cleanup ordering. Add deterministic cleanup-bypass and

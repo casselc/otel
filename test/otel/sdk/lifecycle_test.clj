@@ -18,6 +18,219 @@
   (sdk/init! {:span-processors [processor] :exporter :none
               :metrics? false :logs? false :runtime-metrics? false}))
 
+(defn- observed-release! [journal original state action receipt]
+  (lifecycle-events/settlement-record! journal :spans :release :release-start {})
+  (try
+    (let [value (original state action)
+          outcome (cond (true? value) :returned-true
+                        (false? value) :returned-false
+                        :else :returned-unconfirmed)]
+      (reset! receipt {:value value})
+      (lifecycle-events/settlement-record!
+       journal :spans :release :release-outcome {:outcome outcome})
+      value)
+    (catch :default error
+      (reset! receipt {:throwable error})
+      (lifecycle-events/settlement-record!
+       journal :spans :release :release-outcome {:outcome :threw})
+      (throw error))))
+
+(defn- settlement-proof! [journal handle internal-users exporter-retired?]
+  (let [proof (sdk/shutdown-status handle)]
+    (lifecycle-events/settlement-record!
+     journal :spans :observe :proof
+     {:sdk (:sdk-quiescence proof) :exporter (:exporter-quiescence proof)
+      :overall (:quiescence proof) :internal-users internal-users
+      :exporter-retired? exporter-retired?})
+    proof))
+
+(defn- caller-worker-settlement-trace [premature-proof? accounting-bypass?]
+  (let [journal (atom []) entered (promise) release-caller (promise)
+        retired (promise) release-worker (promise) worker-exited (promise)
+        worker-joined (promise)
+        stopped (promise) caller-result (promise) calls (atom 0) receipt (atom nil)
+        worker (Thread. #(do @release-worker (deliver worker-exited true)))
+        state (atom {:shutdown? false :queue [] :failed-span-count 0})
+        record! #(lifecycle-events/settlement-record! journal :spans %1 %2 %3)
+        exporter (reify export/SpanExporter
+                   (export-spans! [_ _] true)
+                   (flush-exporter! [_]
+                     (swap! calls inc)
+                     (when (= 1 @calls)
+                       (record! :flush :caller-enter {})
+                       (deliver entered true)
+                       @release-caller
+                       (record! :flush :caller-exit {}))
+                     true)
+                   (shutdown-exporter! [_] true))
+        processor (export/->BatchSpanProcessor exporter state
+                   {:max-export-batch-size 1} worker (lifecycle/terminal-action))
+        handle (witness-sdk processor)
+        caller (Thread. #(deliver caller-result
+                          (try (export/force-flush! processor)
+                               (catch :default e e))))
+        stopper (Thread. #(deliver stopped
+                           (try (sdk/shutdown! handle) (catch :default e e))))
+        await-worker lifecycle/await-owned-worker!
+        release-action lifecycle/release-exporter!
+        admit lifecycle/admitted-operation!
+        aggregate-proof lifecycle/combined-settlement]
+    (with-redefs [lifecycle/admitted-operation!
+                  (fn [s rejected action]
+                    ;; Retired admission still rejects. This mutant drops only
+                    ;; accounting on the actual maintained caller entry path.
+                    (if accounting-bypass?
+                      (if (:shutdown? @s) rejected (action))
+                      (admit s rejected action)))
+                  lifecycle/await-owned-worker!
+                  (fn [owned-worker owned-state]
+                    (record! :shutdown :retired
+                             {:worker :running :retired? (:shutdown? @owned-state)})
+                    (deliver retired true)
+                    (let [value (await-worker owned-worker owned-state)]
+                      (record! :shutdown :worker-exited {})
+                      (deliver worker-joined true)
+                      value))
+                  lifecycle/release-exporter!
+                  (fn [s action] (observed-release! journal release-action s action receipt))
+                  lifecycle/combined-settlement
+                  (fn [components terminal]
+                    (let [proof (aggregate-proof components terminal)]
+                      ;; Causal mutant alters the actual permission producer,
+                      ;; not the recorded events or the independent oracle.
+                      (if premature-proof?
+                        (assoc proof :sdk-quiescence :confirmed)
+                        proof)))]
+      (.start worker) (.start caller)
+      (try
+        (is (= true (deref entered 2000 :timeout)))
+        (.start stopper)
+        (is (= true (deref retired 2000 :timeout)))
+        (settlement-proof! journal handle 0 false)
+        (deliver release-worker true)
+        (is (= true (deref worker-exited 2000 :timeout)))
+        (is (= true (deref worker-joined 2000 :timeout)))
+        (is (not (.isAlive worker)))
+        (record! :observe :caller-proof
+                 {:operations-settled?
+                  (:operations-settled?
+                   (lifecycle/owned-settlement state worker (:terminal processor) exporter))})
+        (let [proof (settlement-proof! journal handle 0 false)]
+          (when-not premature-proof?
+            (is (= :unconfirmed (:sdk-quiescence proof)))))
+        (is (nil? @receipt) "caller monitor still excludes exporter release")
+        (is (not (realized? stopped)) "stop remains pending after actual worker exit")
+        (deliver release-caller true)
+        (.join caller 2000) (.join stopper 2000)
+        (is (not (.isAlive caller))) (is (not (.isAlive stopper)))
+        (is (true? (deref caller-result 2000 :timeout)))
+        (is (true? (deref stopped 2000 :timeout)))
+        (is (true? (:value @receipt)))
+        (settlement-proof! journal handle 0 false)
+        (let [before @calls]
+          (is (false? (export/force-flush! processor)))
+          (is (= before @calls) "retired caller never enters exporter"))
+        @journal
+        (finally (deliver release-worker true) (deliver release-caller true)
+                 (.join worker 2000) (.join caller 2000)
+                 (when (.isAlive stopper) (.join stopper 2000)))))))
+
+(deftest settlement-profile-connects-admitted-caller-worker-and-release
+  (let [trace (caller-worker-settlement-trace false false)]
+    (is (lifecycle-events/settlement-valid? trace))
+    (is (= #{:caller-enter :caller-exit :retired :worker-exited
+             :release-start :release-outcome :caller-proof :proof}
+           (set (map :event trace)))))
+  (is (not (lifecycle-events/settlement-valid?
+            (caller-worker-settlement-trace true false)))
+      "same oracle rejects actual premature SDK permission producer")
+  (let [trace (caller-worker-settlement-trace false true)
+        reason (try (lifecycle-events/validate-settlement! trace) nil
+                    (catch :default error (:reason (ex-data error))))]
+    (is (= :caller-bookkeeping-disagreement reason)
+        "actual accounting bypass fails component witness, not public cleanup")))
+
+(defn- exporter-settlement-trace [release-value mutate-release?]
+  (let [journal (atom []) finish (promise) started (promise) retired (atom false)
+        worker (Thread. #(do (deliver started true) @finish))
+        state (atom {:shutdown? false}) receipt (atom nil)
+        failure (ex-info "inert release failure" {})
+        release-action lifecycle/release-exporter!
+        exporter (reify export/SpanExporter
+                   (export-spans! [_ _] true) (flush-exporter! [_] true)
+                   (shutdown-exporter! [_]
+                     (reset! retired true)
+                     (if (= :throw release-value)
+                       (throw failure) release-value))
+                   lifecycle/SettlementWitness
+                   (settlement-status [_]
+                     {:quiescence (if (and @retired (not (.isAlive worker)))
+                                    :confirmed :unconfirmed)}))
+        ;; No SDK worker: foreign exporter owns the independently observed user.
+        processor (export/->SimpleSpanProcessor exporter state
+                    (lifecycle/terminal-action))
+        handle (witness-sdk processor)]
+    (.start worker)
+    (try
+      (is (= true (deref started 2000 :timeout)))
+      (with-redefs [lifecycle/release-exporter!
+                    (fn [s action]
+                      (lifecycle-events/settlement-record!
+                       journal :spans :shutdown :retired
+                       {:worker :absent :retired? (:shutdown? @s)})
+                      (try (observed-release! journal release-action s action receipt)
+                           (finally
+                             ;; Mutate strict release classification in the
+                             ;; real maintained owner state, even after throw.
+                             (when mutate-release?
+                               (swap! s assoc :exporter-release :returned-true)))))]
+        (try (sdk/shutdown! handle) (catch :default _ nil)))
+      (if (= :throw release-value)
+        (is (identical? failure (:throwable @receipt)))
+        (is (identical? release-value (:value @receipt))))
+      (settlement-proof! journal handle (if (.isAlive worker) 1 0) @retired)
+      (deliver finish true) (.join worker 2000)
+      (is (not (.isAlive worker)))
+      (is (= :confirmed (:quiescence
+                         (settlement-proof! journal handle
+                           (if (.isAlive worker) 1 0) @retired))))
+      @journal
+      (finally (deliver finish true) (.join worker 2000)))))
+
+(deftest settlement-profile-checks-strict-release-and-stable-refresh
+  (doseq [value [false nil :truthy :throw]]
+    (is (lifecycle-events/settlement-valid? (exporter-settlement-trace value false)))
+    (is (not (lifecycle-events/settlement-valid? (exporter-settlement-trace value true)))
+        "same oracle rejects real false/nonliteral/thrown release promotion")))
+
+(deftest settlement-profile-rejects-malformed-release-observations
+  ;; Supplemental journal-format controls, NOT substitutes for the causal
+  ;; maintained permission mutants above.
+  (let [trace (exporter-settlement-trace false false)
+        resequence #(mapv (fn [index event] (assoc event :seq index)) (range) %)
+        replace-outcome (fn [f]
+                          (mapv #(if (= :release-outcome (:event %)) (f %) %) trace))
+        reason (fn [events]
+                 (try (lifecycle-events/validate-settlement! events) nil
+                      (catch :default error (:reason (ex-data error)))))]
+    (is (= :release-outcome-envelope
+           (reason (replace-outcome #(assoc % :outcome :truthy)))))
+    (is (= :envelope (reason (replace-outcome #(dissoc % :outcome)))))
+    (is (= :envelope (reason (replace-outcome #(assoc % :payload :extra)))))
+    (is (= :unowned-release-outcome
+           (reason (replace-outcome #(assoc % :operation :different)))))
+    (is (= :duplicate-release
+           (reason (resequence
+                    (mapcat #(if (= :release-start (:event %)) [% %] [%]) trace)))))
+    (is (= :unowned-release-outcome
+           (reason (resequence
+                    (mapcat #(if (= :release-outcome (:event %)) [% %] [%]) trace)))))
+    (is (= :incomplete-release
+           (reason (resequence (remove #(= :release-outcome (:event %)) trace)))))
+    (is (= :exporter-proof-before-settlement
+           (reason (mapv #(if (= :proof (:event %))
+                            (assoc % :exporter-retired? false) %) trace))))))
+
 (deftest shutdown-witness-separates-cached-failure-from-quiescence
   (doseq [throwing? [false true]]
     (let [calls (atom 0)

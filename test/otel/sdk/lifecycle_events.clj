@@ -157,3 +157,110 @@
     (validate! trace)
     true
     (catch :default _ false)))
+
+;; Separate from the legacy lifecycle journal: these are observation points,
+;; NOT a claim that callback entry/return is the admission CAS linearization.
+(defn settlement-record! [trace owner operation event data]
+  (locking trace
+    (swap! trace conj (merge data {:seq (count @trace) :owner owner
+                                  :operation operation :event event}))))
+
+(defn validate-settlement!
+  "Check bounded, scalar settlement observations against independent users.
+  Custom witness truthfulness remains a trusted contract, not this oracle's
+  ability to inspect arbitrary foreign resource users."
+  [trace]
+  (when (> (count trace) 128)
+    (throw (ex-info "settlement journal exceeded bound" {:reason :bound})))
+  (let [owners (reduce
+   (fn [owners [index entry]]
+     (let [{:keys [owner operation event] sequence-number :seq} entry
+           old (get owners owner {:callers #{} :retired? false :worker :absent
+                                  :release :not-started})
+           reject! (fn [reason]
+                     (throw (ex-info "invalid settlement observation"
+                                     {:reason reason :entry entry})))
+           fields (case event
+                    :retired #{:worker :retired?}
+                    :release-outcome #{:outcome}
+                    :caller-proof #{:operations-settled?}
+                    :proof #{:sdk :exporter :overall :internal-users :exporter-retired?}
+                    #{})
+           _ (when-not (and (= (set (keys entry))
+                               (into #{:seq :owner :operation :event} fields))
+                            (= index sequence-number) (keyword? owner)
+                            (keyword? operation)
+                            (every? #(or (nil? %) (boolean? %) (keyword? %)
+                                         (and (integer? %) (<= 0 % 128)))
+                                    (vals entry)))
+               (reject! :envelope))
+           next-state
+           (case event
+             :caller-enter
+             (do (when (or (:retired? old) (contains? (:callers old) operation))
+                   (reject! :late-or-duplicate-caller))
+                 (update old :callers conj operation))
+             :caller-exit
+             (do (when-not (contains? (:callers old) operation)
+                   (reject! :unowned-caller))
+                 (update old :callers disj operation))
+             :retired (do (when-not (true? (:retired? entry))
+                            (reject! :observed-admission-active))
+                          (when-not (contains? #{:absent :running} (:worker entry))
+                            (reject! :worker-envelope))
+                          (assoc old :retired? true :worker (:worker entry)))
+             :worker-exited (do (when-not (:retired? old) (reject! :worker-before-retirement))
+                                (assoc old :worker :exited))
+             :release-start
+             (do (when (or (not (:retired? old)) (seq (:callers old))
+                           (= :running (:worker old)))
+                   (reject! :release-before-sdk-settlement))
+                 (when-not (= :not-started (:release old))
+                   (reject! :duplicate-release))
+                 (assoc old :release :running :release-operation operation))
+             :release-outcome
+             (do (when-not (and (= :running (:release old))
+                               (= operation (:release-operation old)))
+                   (reject! :unowned-release-outcome))
+                 (when-not (contains? #{:returned-true :returned-false
+                                       :returned-unconfirmed :threw} (:outcome entry))
+                   (reject! :release-outcome-envelope))
+                 (assoc old :release (:outcome entry)))
+             :caller-proof
+             (do (when-not (and (boolean? (:operations-settled? entry))
+                               (= (empty? (:callers old)) (:operations-settled? entry)))
+                   (reject! :caller-bookkeeping-disagreement))
+                 old)
+             :proof
+             (do
+               (when-not (and (every? #(contains? #{:confirmed :unconfirmed} %)
+                                      [(:sdk entry) (:exporter entry) (:overall entry)])
+                              (integer? (:internal-users entry))
+                              (boolean? (:exporter-retired? entry)))
+                 (reject! :proof-envelope))
+               (when (and (= :confirmed (:sdk entry))
+                          (or (not (:retired? old)) (seq (:callers old))
+                              (= :running (:worker old))))
+                 (reject! :sdk-proof-before-settlement))
+               (when (and (= :confirmed (:exporter entry))
+                          (or (pos? (:internal-users entry))
+                              (not (or (= :returned-true (:release old))
+                                       (and (:exporter-retired? entry)
+                                            (zero? (:internal-users entry)))))))
+                 (reject! :exporter-proof-before-settlement))
+               (when-not (= (= :confirmed (:overall entry))
+                            (and (= :confirmed (:sdk entry))
+                                 (= :confirmed (:exporter entry))))
+                 (reject! :factor-disagreement))
+               old)
+             (reject! :unknown-event))]
+       (assoc owners owner next-state)))
+   {} (map-indexed vector trace))]
+    (doseq [[owner state] owners]
+      (when (= :running (:release state))
+        (throw (ex-info "release observation has no outcome"
+                        {:reason :incomplete-release :owner owner}))))
+    owners))
+
+(defn settlement-valid? [trace]
+  (try (validate-settlement! trace) true (catch :default _ false)))
