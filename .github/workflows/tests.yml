@@ -14,13 +14,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      JOLT_CACHE_DIR: ${{ github.workspace }}/.jolt-cache-v0.8.3
-      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.3
-      HEGEL_CACHE_DIR: ${{ github.workspace }}/.hegel-native-v0.8.3
-      JOLT_VERSION: 0.8.3
-      JOLT_SOURCE_COMMIT: 343f730922cf16fafe673b466cedcdcfe0596854
+      JOLT_CACHE_DIR: ${{ github.workspace }}/.jolt-cache-v0.8.6
+      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.6
+      HEGEL_CACHE_DIR: ${{ github.workspace }}/.hegel-native-v0.8.6
+      JOLT_VERSION: 0.8.6
+      JOLT_SOURCE_COMMIT: c2a494272cf82785ec8803426b495366000de572
       JOLT_INSTALLER_SHA256: 6e9e16d1db9875fd3e52e5143eab71375c00f44f3b5d321d61e9996a3c948736
-      JOLT_ARCHIVE_SHA256: e567297a6a840d9988a1aa082beb430aeaa0e6610a82a6f9ee0564e117745147
+      JOLT_ARCHIVE_SHA256: 3dab6373f2028efaf7a0e41231fc316de866e55454023c037e9d5981be6358c2
     steps:
       - name: Check out source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2

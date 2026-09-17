@@ -26,7 +26,7 @@ selected graph under both known local and hosted cache layouts.
 
 ## Requirements
 
-jolt v0.8.1 or newer. The telemetry implementation uses the `jolt.host`
+jolt v0.8.6 or newer. The telemetry implementation uses the `jolt.host`
 primitives (`wall-nanos`, `mono-nanos`, and the gc and memory counters) and its
 HTTP/TLS dependencies use Jolt 0.8's value-first FFI write API and the executor
 interfaces added in 0.8.1.
@@ -59,7 +59,7 @@ prompt blocked-read cancellation. The `:consumer-resolution` alias in this
 repository is the executable model of that migration.
 
 Pull requests and `main` are tested on hosted Linux with the released Jolt
-v0.8.3 binary. The workflow pins the Jolt source revision, installer checksum,
+v0.8.6 binary. The workflow pins the Jolt source revision, installer checksum,
 release archive checksum, and checkout action revision; it verifies the runtime
 version and prints `-Srepro -Sdescribe` before running the complete suite in a
 repository-local cache. The matching provenance record lives in
