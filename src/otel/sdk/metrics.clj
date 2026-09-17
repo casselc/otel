@@ -385,6 +385,8 @@
         (swap! state assoc :worker-export-active? false)))))
 
 (defrecord PeriodicReader [provider exporter config state worker terminal]
+  lifecycle/SettlementWitness
+  (settlement-status [_] (lifecycle/owned-settlement state worker terminal exporter))
   export/SpanProcessor
   ;; A reader is not a span processor; these arms exist only so a reader can be
   ;; shut down and flushed through the same calls a provider already makes.
@@ -394,10 +396,11 @@
     ;; Interval collection and force-flush both mutate delta aggregation state.
     ;; Serialize the entire collect/export operation so a flush also waits for
     ;; exporter I/O already started by the worker.
-    (locking state
-      (if (:shutdown? @state)
-        false
-        (boolean (collect-and-export! provider exporter state false)))))
+    (lifecycle/admitted-operation! state false
+      #(locking state
+         (if (:shutdown? @state)
+           false
+           (boolean (collect-and-export! provider exporter state false))))))
   (shutdown! [this]
     (lifecycle/run-terminal!
       terminal
@@ -407,7 +410,9 @@
         ;; caller-owned force-flush or releasing the exporter early.
         (swap! state assoc :shutdown? true)
         (lifecycle/await-owned-worker! worker state)
-        (let [close-value (export/shutdown-metric-exporter! exporter)]
+        (let [close-value (locking state
+                            (lifecycle/release-exporter! state
+                              #(export/shutdown-metric-exporter! exporter)))]
           (if (or (:worker-export-failed? @state)
                   (:shutdown-cancelled? @state))
             false

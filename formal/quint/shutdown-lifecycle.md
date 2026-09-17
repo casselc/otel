@@ -745,3 +745,586 @@ module shutdownLifecycleDoubleCloseMutantTest {
       .expect(not(exporterCloseExactlyOnce))
 }
 ```
+
+## SDK settlement and consumer cleanup
+
+A finished shutdown call is not permission to close the shared database.
+An admitted caller can still be using an exporter after the background worker
+exits. Conversely, a failed delivery result can remain cached even after all
+resource users eventually settle. This extension models those facts separately.
+It does not replace the worker/join controls above.
+
+There are two symbolic component owners and two caller operation IDs per owner.
+`SpanOwner` and `MetricOwner` are opaque component labels, not separate signal
+algorithms: logs use the same ownership seams. Sampled initialization includes
+absent workers for synchronous owners; an absent worker needs no exit transition.
+Two components exercise the all-components conjunction, not a proof about every
+SDK registration graph or the behavior of arbitrary custom component owners.
+Each owner groups admission, callers, accepted drains, worker, export operations,
+join, release and terminal publication. The consumer groups its cached delivery
+result, fresh versioned proof factors, source retirement, persistence and close.
+The aggregate SDK proof is computed from **every** component and its own terminal
+publication; it cannot be independently assigned `confirmed`.
+
+The exporter has its own admission and internal users. Literal-true release is
+a trusted resource-release contract. False, nonliteral/void and thrown release
+do not prove settlement. A custom witness is also a trusted contract: confirmation
+must mean permanent admission retirement and no resource users, not momentary
+idleness. The checked `trustContract` property expresses that premise; there is
+no unenforced `assume`. The hostile-witness module intentionally violates the
+premise and demonstrates why the SDK cannot guarantee safety against a lying
+implementation. Arbitrary custom-witness latency is not modeled or enforced.
+
+Each admission CAS, caller completion, drain admission/start/finish, worker exit,
+join outcome, release invocation/outcome, component/SDK publication, witness
+observation, consumer proof snapshot and cleanup seam is a separate transition.
+Exporter retirement is permanent, making a confirmed snapshot stable despite
+later scheduling. Unknown/throwing/partial witnesses remain unconfirmed.
+`persist` is only an ordering marker, **not** a claim about native persistence.
+No delivery, wall-clock, scheduling fairness or transport guarantees follow.
+
+Correspondence extends `lifecycle.clj`'s `admitted-operation!`, `release-exporter!`,
+`owned-settlement`, `component-settlement`, and `combined-settlement`, and
+`sdk.clj`'s `shutdown-status`. The consumer corresponds to Oscope's embedded stop
+source/persist/connection-close sequence. Caller/worker operations carry distinct
+symbolic IDs in the model; a future runtime trace must retain owner and operation
+identity rather than reconstructing admission from exporter calls. New seam names
+below are **model observations**, not a claim that production emits them.
+The existing reconstructed terminal events still do not prove publication
+linearization, result/Throwable identity, or actual native resource settlement.
+Real blocked-exporter tests remain necessary for those boundaries.
+
+### Settlement state and transitions
+
+```quint target/formal/quint/shutdownSettlement.qnt +=
+module shutdownSettlement {
+  const SDK_ONLY_CLEANUP: bool
+  const ACCEPT_FALSE_RELEASE: bool
+  const ACCEPT_OTHER_RELEASE: bool
+  const ACCEPT_THROWN_RELEASE: bool
+  const LYING_WITNESS: bool
+
+  type OwnerId = SpanOwner | MetricOwner
+  type OperationId = CallerOperation1 | CallerOperation2 | DrainOperation
+  type Admission = Open | Retired
+  type Worker = Absent | Running | Exited
+  type Wait = UnstartedWait | SuccessfulWait | FailedWait
+  type Release = UnstartedRelease | RunningRelease | TrueRelease |
+    FalseRelease | OtherRelease | ThrownRelease
+  type Terminal = PendingTerminal | TrueTerminal | FalseTerminal | ThrownTerminal
+  type Witness = UnconfirmedWitness | ConfirmedWitness
+  type Seam = CallerAdmitted | CallerCompleted | AdmissionRetired |
+    DrainAccepted | ExportBegan | ExportEnded | WorkerExited | JoinSucceeded |
+    JoinFailed | ReleaseCalled | ReleaseTrue | ReleaseFalse | ReleaseOther |
+    ReleaseThrew | OwnerPublished | SDKPublished | ExporterRetired |
+    InternalUserBegan | InternalUserEnded | WitnessConfirmed | WitnessUnknown |
+    DeliveryObserved | ProofRefreshed | SourceRetired | Persisted | ConnectionClosed
+
+  type OwnerState = {
+    admission: Admission, callers: Set[OperationId], drains: Set[OperationId],
+    worker: Worker, exports: Set[OperationId], wait: Wait, release: Release,
+    terminal: Terminal, closeCount: int,
+    exporterAdmission: Admission, internalUsers: Set[OperationId], witness: Witness,
+  }
+  type Factors = {
+    retired: bool, callers: bool, worker: bool, terminal: bool,
+    sdk: bool, exporter: bool, confirmed: bool,
+  }
+  type ConsumerState = {
+    delivery: Terminal, proofVersion: int, factors: OwnerId -> Factors,
+    aggregate: bool, sourceRetired: bool, persisted: bool, closed: bool,
+    refreshes: int, sdkTerminalObserved: bool,
+  }
+  type State = {
+    owners: OwnerId -> OwnerState, sdkTerminal: Terminal,
+    consumer: ConsumerState, seen: Set[Seam],
+  }
+
+  pure val OWNERS = Set(SpanOwner, MetricOwner)
+  pure val CALLER_OPERATIONS = Set(CallerOperation1, CallerOperation2)
+  pure def terminalSettled(t: Terminal): bool = t != PendingTerminal
+  pure def sdkSettled(o: OwnerState): bool =
+    o.admission == Retired and o.callers == Set() and o.worker != Running and
+      terminalSettled(o.terminal)
+  pure def actualExporterSettled(o: OwnerState): bool =
+    o.exporterAdmission == Retired and o.exports == Set() and o.internalUsers == Set()
+  pure def releaseProof(o: OwnerState): bool =
+    o.release == TrueRelease or o.witness == ConfirmedWitness or
+      (ACCEPT_FALSE_RELEASE and o.release == FalseRelease) or
+      (ACCEPT_OTHER_RELEASE and o.release == OtherRelease) or
+      (ACCEPT_THROWN_RELEASE and o.release == ThrownRelease)
+  pure def observeFactors(o: OwnerState): Factors = {
+    retired: o.admission == Retired, callers: o.callers == Set(),
+    worker: o.worker != Running, terminal: terminalSettled(o.terminal),
+    sdk: sdkSettled(o), exporter: releaseProof(o),
+    confirmed: sdkSettled(o) and releaseProof(o),
+  }
+  pure def putOwner(s: State, id: OwnerId, o: OwnerState, seam: Seam): State =
+    { ...s, owners: s.owners.put(id, o), seen: s.seen.union(Set(seam)) }
+  pure def putConsumer(s: State, c: ConsumerState, seam: Seam): State =
+    { ...s, consumer: c, seen: s.seen.union(Set(seam)) }
+
+  pure val initialOwner: OwnerState = {
+    admission: Open, callers: Set(), drains: Set(), worker: Running,
+    exports: Set(), wait: UnstartedWait, release: UnstartedRelease,
+    terminal: PendingTerminal, closeCount: 0,
+    exporterAdmission: Open, internalUsers: Set(), witness: UnconfirmedWitness,
+  }
+  pure val emptyFactors: Factors = {
+    retired: false, callers: false, worker: false, terminal: false,
+    sdk: false, exporter: false, confirmed: false,
+  }
+  action initWithAbsent(absent: Set[OwnerId]): bool = all {
+    absent.subseteq(OWNERS),
+    state' = {
+    owners: OWNERS.mapBy(id => { ...initialOwner,
+      worker: if (absent.contains(id)) Absent else Running }), sdkTerminal: PendingTerminal,
+    consumer: {
+      delivery: PendingTerminal, proofVersion: 0,
+      factors: OWNERS.mapBy(_ => emptyFactors), aggregate: false,
+      sourceRetired: false, persisted: false, closed: false, refreshes: 0,
+      sdkTerminalObserved: false,
+    }, seen: Set(),
+    },
+  }
+  action init = initWithAbsent(Set())
+  action sampleInit = {
+    nondet absent = OWNERS.powerset().oneOf()
+    initWithAbsent(absent)
+  }
+  var state: State
+
+  pure def canAdmit(o: OwnerState, op: OperationId): bool =
+    o.admission == Open and CALLER_OPERATIONS.contains(op) and not(o.callers.contains(op))
+  action admit(id: OwnerId, op: OperationId): bool = {
+    val o = state.owners.get(id)
+    all { canAdmit(o, op),
+      state' = putOwner(state, id, { ...o, callers: o.callers.union(Set(op)) }, CallerAdmitted) }
+  }
+  pure def canComplete(o: OwnerState, op: OperationId): bool =
+    o.callers.contains(op) and not(o.exports.contains(op))
+  action complete(id: OwnerId, op: OperationId): bool = {
+    val o = state.owners.get(id)
+    all { canComplete(o, op),
+      state' = putOwner(state, id, { ...o, callers: o.callers.exclude(Set(op)) }, CallerCompleted) }
+  }
+  action retire(id: OwnerId): bool = {
+    val o = state.owners.get(id)
+    all { o.admission == Open,
+      state' = putOwner(state, id, { ...o, admission: Retired }, AdmissionRetired) }
+  }
+  pure def canAcceptDrain(o: OwnerState): bool =
+    o.admission == Open and o.worker == Running and o.drains == Set()
+  action acceptDrain(id: OwnerId): bool = {
+    val o = state.owners.get(id)
+    all { canAcceptDrain(o),
+      state' = putOwner(state, id, { ...o, drains: Set(DrainOperation) }, DrainAccepted) }
+  }
+  pure def canBegin(o: OwnerState, op: OperationId): bool =
+    o.exporterAdmission == Open and not(o.exports.contains(op)) and
+      (o.callers.contains(op) or (o.drains.contains(op) and o.worker == Running))
+  action beginExport(id: OwnerId, op: OperationId): bool = {
+    val o = state.owners.get(id)
+    all { canBegin(o, op),
+      state' = putOwner(state, id, { ...o, exports: o.exports.union(Set(op)) }, ExportBegan) }
+  }
+  action finishExport(id: OwnerId, op: OperationId): bool = {
+    val o = state.owners.get(id)
+    all { o.exports.contains(op),
+      state' = putOwner(state, id, { ...o, exports: o.exports.exclude(Set(op)),
+        drains: o.drains.exclude(Set(op)) }, ExportEnded) }
+  }
+  pure def canExit(o: OwnerState): bool = o.admission == Retired and
+    o.worker == Running and o.drains == Set() and not(o.exports.contains(DrainOperation))
+  action exitWorker(id: OwnerId): bool = {
+    val o = state.owners.get(id)
+    all { canExit(o),
+      state' = putOwner(state, id, { ...o, worker: Exited }, WorkerExited) }
+  }
+  action join(id: OwnerId, success: bool): bool = {
+    val o = state.owners.get(id)
+    all { o.admission == Retired, o.wait == UnstartedWait,
+      not(success) or o.worker != Running,
+      state' = putOwner(state, id, { ...o, wait: if (success) SuccessfulWait else FailedWait },
+        if (success) JoinSucceeded else JoinFailed) }
+  }
+  pure def canCallRelease(o: OwnerState): bool =
+    o.wait == SuccessfulWait and o.worker != Running and o.release == UnstartedRelease
+  action callRelease(id: OwnerId): bool = {
+    val o = state.owners.get(id)
+    all { canCallRelease(o),
+      state' = putOwner(state, id, { ...o, release: RunningRelease, closeCount: o.closeCount + 1 }, ReleaseCalled) }
+  }
+  pure def canEndRelease(o: OwnerState, outcome: Release): bool =
+    o.release == RunningRelease and
+      Set(TrueRelease, FalseRelease, OtherRelease, ThrownRelease).contains(outcome) and
+      (outcome != TrueRelease or (o.exports == Set() and o.internalUsers == Set()))
+  action endRelease(id: OwnerId, outcome: Release): bool = {
+    val o = state.owners.get(id)
+    val seam = if (outcome == TrueRelease) ReleaseTrue else
+      if (outcome == FalseRelease) ReleaseFalse else
+      if (outcome == OtherRelease) ReleaseOther else ReleaseThrew
+    all { canEndRelease(o, outcome),
+      state' = putOwner(state, id, { ...o, release: outcome,
+        exporterAdmission: if (outcome == TrueRelease) Retired else o.exporterAdmission }, seam) }
+  }
+  pure def canPublish(o: OwnerState): bool =
+    o.terminal == PendingTerminal and
+      (o.wait == FailedWait or Set(TrueRelease, FalseRelease, OtherRelease, ThrownRelease).contains(o.release))
+  pure def canPublishResult(o: OwnerState, result: Terminal): bool =
+    canPublish(o) and
+      (if (o.wait == FailedWait or o.release == ThrownRelease) result == ThrownTerminal
+       else if (o.release == FalseRelease) result == FalseTerminal
+       else Set(TrueTerminal, FalseTerminal).contains(result))
+  action publishOwnerResult(id: OwnerId, outcome: Terminal): bool = {
+    val o = state.owners.get(id)
+    all { canPublishResult(o, outcome),
+      state' = putOwner(state, id, { ...o, terminal: outcome }, OwnerPublished) }
+  }
+  action publishOwner(id: OwnerId): bool = {
+    val o = state.owners.get(id)
+    val outcome = if (o.wait == FailedWait or o.release == ThrownRelease) ThrownTerminal else
+      if (o.release == FalseRelease) FalseTerminal else TrueTerminal
+    publishOwnerResult(id, outcome)
+  }
+  pure def canPublishSDK(s: State): bool = s.sdkTerminal == PendingTerminal and
+    OWNERS.forall(id => terminalSettled(s.owners.get(id).terminal))
+  action publishSDK = {
+    val failure = OWNERS.exists(id => state.owners.get(id).terminal == ThrownTerminal)
+    val failedDelivery = OWNERS.exists(id => state.owners.get(id).terminal == FalseTerminal)
+    all { canPublishSDK(state),
+      state' = { ...state,
+        sdkTerminal: if (failure) ThrownTerminal else if (failedDelivery) FalseTerminal else TrueTerminal,
+        seen: state.seen.union(Set(SDKPublished)) } }
+  }
+  // Exporter-internal users are not SDK caller or worker users.
+  pure def canBeginInternal(o: OwnerState): bool =
+    o.exporterAdmission == Open and o.internalUsers == Set()
+  action beginInternal(id: OwnerId): bool = {
+    val o = state.owners.get(id)
+    all { canBeginInternal(o),
+      state' = putOwner(state, id, { ...o, internalUsers: Set(CallerOperation1) }, InternalUserBegan) }
+  }
+  action endInternal(id: OwnerId): bool = {
+    val o = state.owners.get(id)
+    all { o.internalUsers != Set(),
+      state' = putOwner(state, id, { ...o, internalUsers: Set() }, InternalUserEnded) }
+  }
+  action retireExporter(id: OwnerId): bool = {
+    val o = state.owners.get(id)
+    all { o.exporterAdmission == Open,
+      state' = putOwner(state, id, { ...o, exporterAdmission: Retired }, ExporterRetired) }
+  }
+  pure def canObserveWitness(o: OwnerState, confirmed: bool): bool =
+    o.witness != ConfirmedWitness and
+      (not(confirmed) or actualExporterSettled(o) or LYING_WITNESS)
+  action observeWitness(id: OwnerId, confirmed: bool): bool = {
+    val o = state.owners.get(id)
+    all { canObserveWitness(o, confirmed),
+      state' = putOwner(state, id,
+        { ...o, witness: if (confirmed) ConfirmedWitness else UnconfirmedWitness },
+        if (confirmed) WitnessConfirmed else WitnessUnknown) }
+  }
+  action observeDelivery = all {
+    state.consumer.delivery == PendingTerminal, terminalSettled(state.sdkTerminal),
+    state' = putConsumer(state, { ...state.consumer, delivery: state.sdkTerminal }, DeliveryObserved),
+  }
+  pure def refresh(s: State): ConsumerState = {
+    val fs = OWNERS.mapBy(id => observeFactors(s.owners.get(id)))
+    { ...s.consumer, proofVersion: 1, factors: fs,
+      aggregate: terminalSettled(s.sdkTerminal) and OWNERS.forall(id => fs.get(id).confirmed),
+      sdkTerminalObserved: terminalSettled(s.sdkTerminal),
+      refreshes: s.consumer.refreshes + 1 }
+  }
+  action refreshProof = state' = putConsumer(state, refresh(state), ProofRefreshed)
+  pure def cleanupAllowed(s: State): bool =
+    s.consumer.proofVersion == 1 and terminalSettled(s.sdkTerminal) and
+      (if (SDK_ONLY_CLEANUP) OWNERS.forall(id => s.consumer.factors.get(id).sdk)
+       else s.consumer.aggregate)
+  action retireSource = all {
+    not(state.consumer.sourceRetired), cleanupAllowed(state),
+    state' = putConsumer(state, { ...state.consumer, sourceRetired: true }, SourceRetired),
+  }
+  action persist = all {
+    state.consumer.sourceRetired, not(state.consumer.persisted), cleanupAllowed(state),
+    state' = putConsumer(state, { ...state.consumer, persisted: true }, Persisted),
+  }
+  action closeConnection = all {
+    state.consumer.persisted, not(state.consumer.closed), cleanupAllowed(state),
+    state' = putConsumer(state, { ...state.consumer, closed: true }, ConnectionClosed),
+  }
+  action step = {
+    nondet id = OWNERS.oneOf()
+    nondet op = Set(CallerOperation1, CallerOperation2, DrainOperation).oneOf()
+    nondet success = Set(true, false).oneOf()
+    nondet outcome = Set(TrueRelease, FalseRelease, OtherRelease, ThrownRelease).oneOf()
+    nondet delivery = Set(TrueTerminal, FalseTerminal, ThrownTerminal).oneOf()
+    any { admit(id, op), complete(id, op), retire(id), acceptDrain(id),
+      beginExport(id, op), finishExport(id, op), exitWorker(id), join(id, success),
+      callRelease(id), endRelease(id, outcome), publishOwnerResult(id, delivery), publishSDK,
+      beginInternal(id), endInternal(id), retireExporter(id), observeWitness(id, success),
+      observeDelivery, refreshProof, retireSource, persist, closeConnection }
+  }
+  val trustContract = OWNERS.forall(id => {
+    val o = state.owners.get(id)
+    (o.witness == ConfirmedWitness or o.release == TrueRelease) implies actualExporterSettled(o)
+  })
+  val cleanupOwnsNoUsers =
+    (state.consumer.sourceRetired or state.consumer.persisted or state.consumer.closed) implies
+      (terminalSettled(state.sdkTerminal) and OWNERS.forall(id =>
+        sdkSettled(state.owners.get(id)) and actualExporterSettled(state.owners.get(id))))
+  val cleanupOrder = (state.consumer.closed implies state.consumer.persisted) and
+    (state.consumer.persisted implies state.consumer.sourceRetired)
+  val proofFactorsAgree = and {
+    state.consumer.factors.keys() == OWNERS,
+    OWNERS.forall(id => {
+      val f = state.consumer.factors.get(id)
+      (f.sdk == (f.retired and f.callers and f.worker and f.terminal)) and
+        (f.confirmed == (f.sdk and f.exporter))
+    }),
+    state.consumer.aggregate == (state.consumer.proofVersion == 1 and
+      state.consumer.sdkTerminalObserved and
+      OWNERS.forall(id => state.consumer.factors.get(id).confirmed)),
+  }
+  val releaseExactlyOnce = OWNERS.forall(id => state.owners.get(id).closeCount <= 1)
+  val cachedDeliveryStable = state.consumer.delivery == PendingTerminal or
+    state.consumer.delivery == state.sdkTerminal
+  def reached(seam: Seam): bool = state.seen.contains(seam)
+  val callerAdmittedReached = reached(CallerAdmitted)
+  val callerCompletedReached = reached(CallerCompleted)
+  val admissionRetiredReached = reached(AdmissionRetired)
+  val drainAcceptedReached = reached(DrainAccepted)
+  val exportBeganReached = reached(ExportBegan)
+  val exportEndedReached = reached(ExportEnded)
+  val workerExitedReached = reached(WorkerExited)
+  val joinSucceededReached = reached(JoinSucceeded)
+  val joinFailedReached = reached(JoinFailed)
+  val releaseCalledReached = reached(ReleaseCalled)
+  val releaseTrueReached = reached(ReleaseTrue)
+  val releaseFalseReached = reached(ReleaseFalse)
+  val releaseOtherReached = reached(ReleaseOther)
+  val releaseThrewReached = reached(ReleaseThrew)
+  val ownerPublishedReached = reached(OwnerPublished)
+  val sdkPublishedReached = reached(SDKPublished)
+  val exporterRetiredReached = reached(ExporterRetired)
+  val internalUserBeganReached = reached(InternalUserBegan)
+  val internalUserEndedReached = reached(InternalUserEnded)
+  val witnessConfirmedReached = reached(WitnessConfirmed)
+  val witnessUnknownReached = reached(WitnessUnknown)
+  val deliveryObservedReached = reached(DeliveryObserved)
+  val proofRefreshedReached = reached(ProofRefreshed)
+  val sourceRetiredReached = reached(SourceRetired)
+  val persistedReached = reached(Persisted)
+  val connectionClosedReached = reached(ConnectionClosed)
+}
+module shutdownSettlementCorrected {
+  import shutdownSettlement(SDK_ONLY_CLEANUP = false, ACCEPT_FALSE_RELEASE = false,
+    ACCEPT_OTHER_RELEASE = false, ACCEPT_THROWN_RELEASE = false, LYING_WITNESS = false).*
+}
+```
+
+### Deterministic settlement controls
+
+These scenarios check the trusted premise and the permission boundary directly.
+Mutation tests deliberately reach a state where `cleanupOwnsNoUsers` is false;
+their green test result means the causal **red control** was detected, not that
+the mutant satisfies the contract. The hostile-witness control also requires
+`trustContract` to be false. The sampled corrected module checks that premise
+alongside the resource-ownership invariant.
+
+```quint target/formal/quint/shutdownSettlementTest.qnt +=
+module shutdownSettlementCorrectedTest {
+  import shutdownSettlement(SDK_ONLY_CLEANUP = false,
+    ACCEPT_FALSE_RELEASE = false, ACCEPT_OTHER_RELEASE = false,
+    ACCEPT_THROWN_RELEASE = false, LYING_WITNESS = false).*
+    from "./shutdownSettlement"
+
+  action settleOwner(id: OwnerId, outcome: Release): bool =
+    retire(id).then(exitWorker(id)).then(join(id, true)).then(callRelease(id))
+      .then(endRelease(id, outcome)).then(publishOwner(id))
+  action prepareBoth(outcome: Release): bool =
+    settleOwner(SpanOwner, outcome).then(settleOwner(MetricOwner, TrueRelease))
+      .then(publishSDK).then(observeDelivery).then(refreshProof)
+
+  run trustedPremiseAndSuccessfulCleanupTest = init
+    .then(prepareBoth(TrueRelease)).expect(trustContract)
+    .then(retireSource).then(persist).then(closeConnection)
+    .expect(and { cleanupOwnsNoUsers, cleanupOrder, proofFactorsAgree,
+      releaseExactlyOnce, cachedDeliveryStable, state.consumer.closed })
+
+  run admittedCallerBlocksProofAfterWorkerExitTest = init
+    .then(admit(SpanOwner, CallerOperation1))
+    .then(beginExport(SpanOwner, CallerOperation1))
+    .then(retire(SpanOwner)).then(exitWorker(SpanOwner)).then(join(SpanOwner, true))
+    .then(callRelease(SpanOwner))
+    .expect(not(canEndRelease(state.owners.get(SpanOwner), TrueRelease)))
+    .then(finishExport(SpanOwner, CallerOperation1))
+    .then(endRelease(SpanOwner, TrueRelease)).then(publishOwner(SpanOwner))
+    .then(settleOwner(MetricOwner, TrueRelease)).then(publishSDK)
+    .then(refreshProof).expect(not(cleanupAllowed(state)))
+    .expect(not(canAdmit(state.owners.get(SpanOwner), CallerOperation2)))
+    .then(complete(SpanOwner, CallerOperation1))
+    // Completion does not magically update the consumer's old observation.
+    .expect(not(cleanupAllowed(state))).then(refreshProof)
+    .then(retireSource).then(persist).then(closeConnection)
+    .expect(and { trustContract, cleanupOwnsNoUsers, state.consumer.refreshes == 2 })
+
+  run acceptedDrainStartsAfterRetirementTest = init
+    .then(acceptDrain(SpanOwner)).then(retire(SpanOwner))
+    .expect(not(canExit(state.owners.get(SpanOwner)))).then(beginExport(SpanOwner, DrainOperation))
+    .then(finishExport(SpanOwner, DrainOperation)).then(exitWorker(SpanOwner))
+    .then(join(SpanOwner, true)).then(callRelease(SpanOwner))
+    .then(endRelease(SpanOwner, TrueRelease)).then(publishOwner(SpanOwner))
+    .expect(not(canBegin(state.owners.get(SpanOwner), DrainOperation)))
+    .then(settleOwner(MetricOwner, TrueRelease)).then(publishSDK).then(refreshProof)
+    .then(retireSource).then(persist).then(closeConnection)
+    .expect(and { trustContract, cleanupOwnsNoUsers })
+
+  run allComponentsAndSDKPublicationRequiredTest = init
+    .then(settleOwner(SpanOwner, TrueRelease)).then(refreshProof)
+    .expect(not(cleanupAllowed(state))).expect(not(canPublishSDK(state)))
+    .then(settleOwner(MetricOwner, TrueRelease)).then(refreshProof)
+    .expect(not(cleanupAllowed(state))).then(publishSDK).then(refreshProof)
+    .then(retireSource).then(persist).then(closeConnection)
+    .expect(cleanupOwnsNoUsers)
+
+  run nonTrueReleaseBlocksCleanupTest = {
+    nondet outcome = Set(FalseRelease, OtherRelease, ThrownRelease).oneOf()
+    init.then(prepareBoth(outcome)).expect(not(cleanupAllowed(state)))
+      .then(observeWitness(SpanOwner, false)).then(refreshProof).expect(not(cleanupAllowed(state)))
+      .expect(and { trustContract, not(state.consumer.aggregate),
+        state.owners.get(SpanOwner).closeCount == 1 })
+  }
+
+  run failedDeliveryLaterCleanupWithoutRepeatedShutdownTest = init
+    .then(beginInternal(SpanOwner)).then(prepareBoth(FalseRelease))
+    .expect(not(cleanupAllowed(state))).expect(not(canObserveWitness(state.owners.get(SpanOwner), true)))
+    .then(retireExporter(SpanOwner)).expect(not(canObserveWitness(state.owners.get(SpanOwner), true)))
+    .then(endInternal(SpanOwner)).then(observeWitness(SpanOwner, true))
+    .then(refreshProof).then(retireSource).then(persist).then(closeConnection)
+    .then(refreshProof)
+    .expect(and { trustContract, cleanupOwnsNoUsers, cachedDeliveryStable,
+      state.consumer.delivery == FalseTerminal,
+      state.owners.get(SpanOwner).closeCount == 1,
+      state.consumer.refreshes == 3 })
+
+  run failedWaitCanSettleLaterWithTrustedWitnessTest = init
+    .then(admit(SpanOwner, CallerOperation1)).then(retire(SpanOwner))
+    .then(join(SpanOwner, false)).expect(not(canCallRelease(state.owners.get(SpanOwner))))
+    .then(publishOwner(SpanOwner)).then(settleOwner(MetricOwner, TrueRelease))
+    .then(publishSDK).then(observeDelivery).then(refreshProof).expect(not(cleanupAllowed(state)))
+    .then(complete(SpanOwner, CallerOperation1)).then(exitWorker(SpanOwner))
+    .then(retireExporter(SpanOwner)).then(observeWitness(SpanOwner, true))
+    .then(refreshProof).then(retireSource).then(persist).then(closeConnection)
+    .expect(and { trustContract, cleanupOwnsNoUsers, cachedDeliveryStable,
+      state.consumer.delivery == ThrownTerminal,
+      state.owners.get(SpanOwner).closeCount == 0 })
+
+  run momentaryIdleIsNotStableWitnessTest = init
+    .then(prepareBoth(OtherRelease)).expect(not(canObserveWitness(state.owners.get(SpanOwner), true)))
+    .expect(not(cleanupAllowed(state))).then(beginInternal(SpanOwner)).then(endInternal(SpanOwner))
+    .expect(not(canObserveWitness(state.owners.get(SpanOwner), true))).then(retireExporter(SpanOwner))
+    .then(observeWitness(SpanOwner, true)).expect(not(canBeginInternal(state.owners.get(SpanOwner))))
+    .then(refreshProof).then(retireSource).then(persist).then(closeConnection)
+    .expect(and { trustContract, cleanupOwnsNoUsers })
+
+  // A blocked action's .fail() is terminal: Quint does not carry state through
+  // a failed action. Continued scenarios above inspect the action's same guard.
+  run retiredAdmissionActuallyDisabledTest = init.then(retire(SpanOwner))
+    .then(admit(SpanOwner, CallerOperation1).fail())
+  run idleWitnessActuallyDisabledTest = init
+    .then(observeWitness(SpanOwner, true).fail())
+  run falseReleaseCleanupActuallyDisabledTest = init.then(prepareBoth(FalseRelease))
+    .then(retireSource.fail())
+  run otherReleaseCleanupActuallyDisabledTest = init.then(prepareBoth(OtherRelease))
+    .then(retireSource.fail())
+  run thrownReleaseCleanupActuallyDisabledTest = init.then(prepareBoth(ThrownRelease))
+    .then(retireSource.fail())
+  run pendingDrainWorkerExitActuallyDisabledTest = init
+    .then(acceptDrain(SpanOwner)).then(retire(SpanOwner)).then(exitWorker(SpanOwner).fail())
+
+  run absentWorkerDrainAdmissionActuallyDisabledTest = initWithAbsent(Set(SpanOwner))
+    .expect(not(canAcceptDrain(state.owners.get(SpanOwner))))
+    .then(acceptDrain(SpanOwner).fail())
+
+  run absentWorkerStillTracksAdmittedCallerTest = initWithAbsent(Set(SpanOwner))
+    .then(admit(SpanOwner, CallerOperation1)).then(retire(SpanOwner))
+    .then(join(SpanOwner, true)).then(callRelease(SpanOwner))
+    .then(endRelease(SpanOwner, TrueRelease)).then(publishOwner(SpanOwner))
+    .then(settleOwner(MetricOwner, TrueRelease)).then(publishSDK).then(refreshProof)
+    .expect(not(cleanupAllowed(state))).then(complete(SpanOwner, CallerOperation1))
+    .then(refreshProof).then(retireSource).then(persist).then(closeConnection)
+    .expect(and { trustContract, cleanupOwnsNoUsers, proofFactorsAgree,
+      state.owners.get(SpanOwner).worker == Absent })
+
+  run falseDeliveryWithTrueReleaseStillAllowsCleanupTest = init
+    .then(retire(SpanOwner)).then(exitWorker(SpanOwner)).then(join(SpanOwner, true))
+    .then(callRelease(SpanOwner)).then(endRelease(SpanOwner, TrueRelease))
+    .then(publishOwnerResult(SpanOwner, FalseTerminal))
+    .then(settleOwner(MetricOwner, TrueRelease)).then(publishSDK).then(observeDelivery)
+    .then(refreshProof).then(retireSource).then(persist).then(closeConnection)
+    .expect(and { trustContract, cleanupOwnsNoUsers, cachedDeliveryStable,
+      state.consumer.delivery == FalseTerminal, state.consumer.closed })
+}
+module shutdownSettlementSDKOnlyMutantTest {
+  import shutdownSettlement(SDK_ONLY_CLEANUP = true,
+    ACCEPT_FALSE_RELEASE = false, ACCEPT_OTHER_RELEASE = false,
+    ACCEPT_THROWN_RELEASE = false, LYING_WITNESS = false).* from "./shutdownSettlement"
+  action settleOwner(id: OwnerId, outcome: Release): bool =
+    retire(id).then(exitWorker(id)).then(join(id, true)).then(callRelease(id))
+      .then(endRelease(id, outcome)).then(publishOwner(id))
+  run forbiddenCleanupControlTest = init
+    .then(settleOwner(SpanOwner, FalseRelease)).then(settleOwner(MetricOwner, TrueRelease))
+    .then(publishSDK).then(refreshProof).then(retireSource).then(persist).then(closeConnection)
+    .expect(and { not(cleanupOwnsNoUsers), state.consumer.closed, trustContract })
+}
+module shutdownSettlementFalseReleaseMutantTest {
+  import shutdownSettlement(SDK_ONLY_CLEANUP = false,
+    ACCEPT_FALSE_RELEASE = true, ACCEPT_OTHER_RELEASE = false,
+    ACCEPT_THROWN_RELEASE = false, LYING_WITNESS = false).* from "./shutdownSettlement"
+  action settleOwner(id: OwnerId, outcome: Release): bool =
+    retire(id).then(exitWorker(id)).then(join(id, true)).then(callRelease(id))
+      .then(endRelease(id, outcome)).then(publishOwner(id))
+  run forbiddenCleanupControlTest = init
+    .then(settleOwner(SpanOwner, FalseRelease)).then(settleOwner(MetricOwner, TrueRelease))
+    .then(publishSDK).then(refreshProof).then(retireSource).then(persist).then(closeConnection)
+    .expect(and { not(cleanupOwnsNoUsers), state.consumer.closed, trustContract })
+}
+module shutdownSettlementOtherReleaseMutantTest {
+  import shutdownSettlement(SDK_ONLY_CLEANUP = false,
+    ACCEPT_FALSE_RELEASE = false, ACCEPT_OTHER_RELEASE = true,
+    ACCEPT_THROWN_RELEASE = false, LYING_WITNESS = false).* from "./shutdownSettlement"
+  action settleOwner(id: OwnerId, outcome: Release): bool =
+    retire(id).then(exitWorker(id)).then(join(id, true)).then(callRelease(id))
+      .then(endRelease(id, outcome)).then(publishOwner(id))
+  run forbiddenCleanupControlTest = init
+    .then(settleOwner(SpanOwner, OtherRelease)).then(settleOwner(MetricOwner, TrueRelease))
+    .then(publishSDK).then(refreshProof).then(retireSource).then(persist).then(closeConnection)
+    .expect(and { not(cleanupOwnsNoUsers), state.consumer.closed, trustContract })
+}
+module shutdownSettlementThrownReleaseMutantTest {
+  import shutdownSettlement(SDK_ONLY_CLEANUP = false,
+    ACCEPT_FALSE_RELEASE = false, ACCEPT_OTHER_RELEASE = false,
+    ACCEPT_THROWN_RELEASE = true, LYING_WITNESS = false).* from "./shutdownSettlement"
+  action settleOwner(id: OwnerId, outcome: Release): bool =
+    retire(id).then(exitWorker(id)).then(join(id, true)).then(callRelease(id))
+      .then(endRelease(id, outcome)).then(publishOwner(id))
+  run forbiddenCleanupControlTest = init
+    .then(settleOwner(SpanOwner, ThrownRelease)).then(settleOwner(MetricOwner, TrueRelease))
+    .then(publishSDK).then(refreshProof).then(retireSource).then(persist).then(closeConnection)
+    .expect(and { not(cleanupOwnsNoUsers), state.consumer.closed, trustContract })
+}
+module shutdownSettlementHostileWitnessMutantTest {
+  import shutdownSettlement(SDK_ONLY_CLEANUP = false,
+    ACCEPT_FALSE_RELEASE = false, ACCEPT_OTHER_RELEASE = false,
+    ACCEPT_THROWN_RELEASE = false, LYING_WITNESS = true).* from "./shutdownSettlement"
+  action settleOwner(id: OwnerId, outcome: Release): bool =
+    retire(id).then(exitWorker(id)).then(join(id, true)).then(callRelease(id))
+      .then(endRelease(id, outcome)).then(publishOwner(id))
+  run forbiddenCleanupControlTest = init
+    .then(settleOwner(SpanOwner, FalseRelease)).then(settleOwner(MetricOwner, TrueRelease))
+    .then(publishSDK).then(beginInternal(SpanOwner)).then(observeWitness(SpanOwner, true))
+    .then(refreshProof).then(retireSource).then(persist).then(closeConnection)
+    .expect(and { not(cleanupOwnsNoUsers), state.consumer.closed, not(trustContract) })
+}
+```

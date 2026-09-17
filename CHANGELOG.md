@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- Add implementation-connected settlement journals for admitted callers,
+  worker completion, strict exporter release and refreshed ownership proof.
+  Observe exactly-once release outcomes without changing values or errors,
+  and require literal-true release or stable retired exporter settlement.
+  Check caller bookkeeping after actual worker completion; the accounting
+  control exposes a component-witness gap, not an unsafe public cleanup path.
+  Separate causal permission controls from the unchanged legacy lifecycle
+  oracle; these observations do not claim admission-CAS linearization.
+
+- Extend the literate shutdown model with admitted callers, synchronous owners,
+  strict exporter release, trusted stable settlement witnesses, fresh aggregate
+  proof and consumer cleanup ordering. Add deterministic cleanup-bypass and
+  false/nonliteral/thrown-release controls plus a hostile-witness control that
+  exposes the trusted premise. Delivery outcomes remain separate from resource
+  permission; sampled checks do not establish delivery or native persistence.
+  Include the aggregate SDK source in the model workflow's relevant-input
+  triggers so SDK-only settlement changes cannot skip this gate.
+
+- Add a closed `otel.sdk/shutdown-status` ownership witness, separate from
+  shutdown success. Maintained processors retire caller export admission and
+  track in-flight operations; unknown components remain unconfirmed. The
+  witness separates SDK operation settlement from exporter resource settlement
+  and refreshes without replaying shutdown. Exporter failures remain unconfirmed
+  unless the exporter supplies its own stable retired-settlement witness;
+  literal-true release declares the documented release contract fulfilled.
+  It does not change cached shutdown values or Throwable identity or guarantee
+  telemetry delivery.
+
 - Require Jolt 0.8.6 or newer and run hosted tests on its checksum-pinned
   release, with isolated compiler-version caches and matching minimum-version
   and toolchain checks.

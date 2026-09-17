@@ -26,7 +26,10 @@
   (flush-exporter! [exporter]
     "Block until anything buffered inside the exporter has been written.")
   (shutdown-exporter! [exporter]
-    "Release the exporter's resources. Later exports are no-ops."))
+    "Release the exporter's resources. Later exports are no-ops. Literal true
+    declares completed resource release to the SDK settlement witness; other
+    return values do not establish that proof (their existing values remain
+    unchanged). A SettlementWitness may separately confirm resource quiescence."))
 
 (defprotocol SpanProcessor
   (on-start [processor span parent-context]
@@ -60,23 +63,34 @@
     (shutdown-exporter! exporter)))
 
 (defrecord SimpleSpanProcessor [exporter state terminal]
+  lifecycle/SettlementWitness
+  (settlement-status [_] (lifecycle/owned-settlement state nil terminal exporter))
   SpanProcessor
   (on-start [_ _ _] nil)
   (on-end [_ span]
     ;; Only sampled spans are exported. A :record-only span is recorded locally
     ;; for in-process consumers but is deliberately not sent onward.
-    (locking state
-      (when (and (not (:shutdown? @state))
-                 (trace/sampled? (:span-context span)))
-        (export-quietly! exporter [span])))
+    (lifecycle/admitted-operation!
+      state nil
+      (fn []
+        (locking state
+          (when (and (not (:shutdown? @state))
+                     (trace/sampled? (:span-context span)))
+            (export-quietly! exporter [span])))))
     nil)
-  (force-flush! [_] (flush-exporter-suppressed! exporter))
+  (force-flush! [_]
+    (lifecycle/admitted-operation! state false
+      #(locking state
+         (if (:shutdown? @state) false
+             (flush-exporter-suppressed! exporter)))))
   (shutdown! [_]
     (lifecycle/run-terminal!
       terminal
-      #(locking state
-         (swap! state assoc :shutdown? true)
-         (shutdown-exporter-suppressed! exporter)))))
+      (fn []
+        (locking state
+          (swap! state assoc :shutdown? true)
+          (lifecycle/release-exporter! state
+            (fn [] (shutdown-exporter-suppressed! exporter))))))))
 
 (defn simple-processor
   "Export each span as it ends, synchronously."
@@ -174,7 +188,16 @@
         (Thread/sleep slice)
         (recur (- remaining slice))))))
 
+(defn- final-span-drain! [exporter state config]
+  (locking state
+    (let [drained? (drain! exporter state (:max-export-batch-size config) false)
+          flushed? (flush-exporter-suppressed! exporter)
+          no-lifetime-failures? (zero? (:failed-span-count @state))]
+      (boolean (and drained? flushed? no-lifetime-failures?)))))
+
 (defrecord BatchSpanProcessor [exporter state config worker terminal]
+  lifecycle/SettlementWitness
+  (settlement-status [_] (lifecycle/owned-settlement state worker terminal exporter))
   SpanProcessor
   (on-start [_ _ _] nil)
   (on-end [_ span]
@@ -194,14 +217,10 @@
     ;; the completion barrier for that batch; checking an empty queue alone is
     ;; not sufficient. Using the atom object only as a monitor still leaves its
     ;; lock-free swap path available to nonblocking producers.
-    (locking state
-      (let [drained? (drain! exporter state (:max-export-batch-size config)
-                             false)
-            ;; Do not short-circuit exporter flush after a failed drain. The
-            ;; callback may own buffered resources even when this batch failed.
-            flushed? (flush-exporter-suppressed! exporter)
-            no-lifetime-failures? (zero? (:failed-span-count @state))]
-        (boolean (and drained? flushed? no-lifetime-failures?)))))
+    (lifecycle/admitted-operation! state false
+      #(locking state
+         (if (:shutdown? @state) false
+             (final-span-drain! exporter state config)))))
   (shutdown! [this]
     (lifecycle/run-terminal!
       terminal
@@ -217,11 +236,13 @@
         ;; the exporter open; a timeout is not evidence of quiescence.
         (let [_ (lifecycle/await-owned-worker! worker state)
               flush-outcome (try
-                              {:value (force-flush! this)}
+                              {:value (final-span-drain! exporter state config)}
                               (catch :default throwable
                                 {:throwable throwable}))
               close-outcome (try
-                              {:value (shutdown-exporter-suppressed! exporter)}
+                              {:value (locking state
+                                        (lifecycle/release-exporter! state
+                                          #(shutdown-exporter-suppressed! exporter)))}
                               (catch :default throwable
                                 {:throwable throwable}))
               failure (or (:throwable flush-outcome)
@@ -295,6 +316,8 @@
 ;; --- composite --------------------------------------------------------------
 
 (defrecord CompositeSpanProcessor [processors terminal]
+  lifecycle/SettlementWitness
+  (settlement-status [_] (lifecycle/combined-settlement processors terminal))
   SpanProcessor
   (on-start [_ span parent-context]
     (doseq [p processors] (on-start p span parent-context))
@@ -352,6 +375,8 @@
 (declare force-flush-pipelines! shutdown-pipelines!)
 
 (defrecord IndependentBatchSpanPipelines [pipelines terminal]
+  lifecycle/SettlementWitness
+  (settlement-status [_] (lifecycle/combined-settlement (vals pipelines) terminal))
   SpanProcessor
   (on-start [_ span parent-context]
     (notify-pipelines! pipelines #(on-start % span parent-context)))
@@ -440,4 +465,5 @@
     "Write one collection. `collected` is a sequence of {:scope … :metrics […]}.
     Returns truthy on success and must not throw.")
   (shutdown-metric-exporter! [exporter]
-    "Release the exporter's resources."))
+    "Release the exporter's resources. Literal true declares completed resource
+    release; other values need an exporter-owned SettlementWitness for proof."))

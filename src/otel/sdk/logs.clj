@@ -38,7 +38,8 @@
   (export-logs! [exporter records]
     "Write a batch of log records. Returns truthy on success; must not throw.")
   (shutdown-log-exporter! [exporter]
-    "Release the exporter's resources."))
+    "Release the exporter's resources. Literal true declares completed resource
+    release; other values need an exporter-owned SettlementWitness for proof."))
 
 ;; --- processors -------------------------------------------------------------
 
@@ -59,20 +60,27 @@
         (swap! state assoc :worker-export-active? false)))))
 
 (defrecord SimpleLogProcessor [exporter state terminal]
+  lifecycle/SettlementWitness
+  (settlement-status [_] (lifecycle/owned-settlement state nil terminal exporter))
   export/SpanProcessor
   (on-start [_ _ _] nil)
   (on-end [_ record]
-    (locking state
-      (when-not (:shutdown? @state)
-        (export-quietly! exporter state [record] false)))
+    (lifecycle/admitted-operation!
+      state nil
+      (fn []
+        (locking state
+          (when-not (:shutdown? @state)
+            (export-quietly! exporter state [record] false)))))
     nil)
   (force-flush! [_] true)
   (shutdown! [_]
     (lifecycle/run-terminal!
       terminal
-      #(locking state
-         (swap! state assoc :shutdown? true)
-         (shutdown-log-exporter! exporter)))))
+      (fn []
+        (locking state
+          (swap! state assoc :shutdown? true)
+          (lifecycle/release-exporter! state
+            (fn [] (shutdown-log-exporter! exporter))))))))
 
 (defn simple-processor
   "Export each record as it is emitted, synchronously."
@@ -103,6 +111,8 @@
             (recur (and exported? ok))))))))
 
 (defrecord BatchLogProcessor [exporter state config worker terminal]
+  lifecycle/SettlementWitness
+  (settlement-status [_] (lifecycle/owned-settlement state worker terminal exporter))
   export/SpanProcessor
   (on-start [_ _ _] nil)
   (on-end [_ record]
@@ -118,16 +128,20 @@
     ;; A batch disappears from :queue before exporter I/O finishes. The shared
     ;; drain monitor turns force-flush into a completion barrier for a worker's
     ;; already-dequeued batch as well as for records still in the queue.
-    (locking state
-      (boolean (drain! exporter state (:max-export-batch-size config) false))))
+    (lifecycle/admitted-operation! state false
+      #(locking state
+         (if (:shutdown? @state) false
+             (boolean (drain! exporter state (:max-export-batch-size config) false))))))
   (shutdown! [this]
     (lifecycle/run-terminal!
       terminal
       (fn []
         (swap! state assoc :shutdown? true)
         (lifecycle/await-owned-worker! worker state)
-        (let [flushed? (export/force-flush! this)
-              close-value (shutdown-log-exporter! exporter)]
+        (let [flushed? (locking state
+                         (boolean (drain! exporter state (:max-export-batch-size config) false)))
+              close-value (locking state
+                            (lifecycle/release-exporter! state #(shutdown-log-exporter! exporter)))]
           (if (and (boolean flushed?)
                    (not (:worker-export-failed? @state))
                    (not (:shutdown-cancelled? @state)))
@@ -198,6 +212,8 @@
     this))
 
 (defrecord SdkLoggerProvider [resource clock limits processor shutdown? terminal]
+  lifecycle/SettlementWitness
+  (settlement-status [_] (lifecycle/combined-settlement [processor] terminal))
   api/LoggerProvider
   (get-logger* [this scope]
     (->SdkLogger this (attr/normalize-scope scope))))

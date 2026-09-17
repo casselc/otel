@@ -6,6 +6,116 @@
   []
   (atom nil))
 
+(defprotocol SettlementWitness
+  (settlement-status [component]
+    "Return a closed ownership witness, never a resource or Throwable.
+    This MUST be a bounded, nonblocking, nonwaiting snapshot observation:
+    never join a worker, await exporter I/O, or start resource operations.
+    The SDK invokes trusted custom witnesses synchronously; this contract is
+    not sandbox isolation or enforcement of foreign implementation latency.
+    :quiescence :confirmed declares stable retirement of admission and that
+    every owned caller/background resource-using operation has settled, not
+    momentary idleness. Implementers must never reopen that admission. An
+    exporter must include its internal resource users in this declaration."))
+
+(defn terminal-status
+  "Observe an exactly-once action without waiting or exposing its result."
+  [terminal]
+  (if-let [outcome (some-> terminal deref)]
+    (if (realized? outcome)
+      (let [{:keys [value throwable]} @outcome]
+        (cond throwable :threw value :returned-true :else :returned-false))
+      :running)
+    :not-started))
+
+(defn admitted-operation!
+  "Count caller-owned exporter operations across the atomic retirement gate.
+  Return rejected-value without running action after admission retires."
+  [state rejected-value action]
+  (let [admitted? (loop []
+                    (let [old @state]
+                      (cond
+                        (:shutdown? old) false
+                        (compare-and-set! state old
+                                          (update old :caller-export-count (fnil inc 0))) true
+                        :else (recur))))]
+    (if admitted?
+      (try (action)
+           (finally (swap! state update :caller-export-count dec)))
+      rejected-value)))
+
+(declare component-settlement)
+
+(defn release-exporter!
+  "Record only the release contract's scalar outcome; preserve value/identity.
+  Failure is not resource settlement proof."
+  [state action]
+  (swap! state assoc :exporter-release :running)
+  (try
+    (let [value (action)]
+      (swap! state assoc :exporter-release
+             (cond (true? value) :returned-true
+                   (false? value) :returned-false
+                   :else :returned-unconfirmed))
+      value)
+    (catch :default error
+      (swap! state assoc :exporter-release :threw)
+      (throw error))))
+
+(defn owned-settlement
+  "Fresh witness for a maintained owner. Reading it never waits for a worker.
+  Retirement prevents new counted callers; an existing caller blocks proof."
+  [state worker terminal exporter]
+  (let [snapshot @state
+        retired? (true? (:shutdown? snapshot))
+        callers-settled? (zero? (get snapshot :caller-export-count 0))
+        worker-settled? (try (or (nil? worker) (not (.isAlive worker)))
+                            (catch :default _ false))
+        outcome (terminal-status terminal)
+        action-settled? (contains? #{:returned-true :returned-false :threw} outcome)
+        sdk-settled? (and retired? callers-settled? worker-settled? action-settled?)
+        exporter-settled? (or (= :returned-true (:exporter-release snapshot))
+                              (= :confirmed (:quiescence (component-settlement exporter))))]
+    {:admission-retired? retired?
+     :operations-settled? callers-settled?
+     :worker-settled? worker-settled?
+     :terminal outcome
+     :sdk-quiescence (if sdk-settled? :confirmed :unconfirmed)
+     :exporter-quiescence (if exporter-settled? :confirmed :unconfirmed)
+     :quiescence (if (and sdk-settled? exporter-settled?)
+                   :confirmed :unconfirmed)}))
+
+(defn component-settlement
+  "Unknown/custom owners must never gain cleanup permission by default."
+  [component]
+  (if (satisfies? SettlementWitness component)
+    (try (let [status (settlement-status component)]
+           ;; A protocol implementation can carry arbitrary values. Never copy
+           ;; those into the operator-visible SDK result.
+           {:quiescence (if (= :confirmed (:quiescence status)) :confirmed :unconfirmed)
+            :sdk-quiescence (if (= :confirmed (:sdk-quiescence status)) :confirmed :unconfirmed)
+            :exporter-quiescence (if (= :confirmed (:exporter-quiescence status)) :confirmed :unconfirmed)
+            :terminal (if (contains? #{:not-started :running :returned-true :returned-false :threw}
+                                     (:terminal status))
+                        (:terminal status) :unknown)})
+         (catch :default _ {:quiescence :unconfirmed}))
+    {:quiescence :unconfirmed}))
+
+(defn combined-settlement
+  [components terminal]
+  (let [statuses (mapv component-settlement components)
+        outcome (terminal-status terminal)]
+    {:terminal outcome
+     :sdk-quiescence (if (and (contains? #{:returned-true :returned-false :threw} outcome)
+                              (every? #(= :confirmed (:sdk-quiescence %)) statuses))
+                       :confirmed :unconfirmed)
+     :exporter-quiescence (if (every? #(= :confirmed (:exporter-quiescence %)) statuses)
+                            :confirmed :unconfirmed)
+     :quiescence (if (and (contains? #{:returned-true :returned-false :threw} outcome)
+                          (every? #(= :confirmed (:quiescence %)) statuses))
+                   :confirmed :unconfirmed)
+     :components statuses}))
+
 (defn await-worker!
   "Wait until `worker` has terminated before releasing resources it may own.
 
