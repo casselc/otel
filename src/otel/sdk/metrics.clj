@@ -85,33 +85,57 @@
   (-> (assoc (or cell {}) :value v)
       (with-retained-dropped-count dropped-count)))
 
+(defn- finite-histogram-measurement [v]
+  ;; This SDK's explicit-histogram relay supports finite doubles. Ignore invalid
+  ;; measurements before attributes or cells are touched, without logging values.
+  ;; Negative finite measurements retain existing behavior; sum overflow from
+  ;; multiple finite measurements is a separate, currently unqualified domain.
+  (when (number? v)
+    (try
+      (let [d (double v)]
+        (when (and (== d d) (not= d ##Inf) (not= d ##-Inf)) d))
+      (catch Throwable _ nil))))
+
+(defn- finite-sum-admission? [v]
+  ;; Preserve integer and other accepted numeric values for aggregation. The
+  ;; double conversion is only a finite-domain probe, not a coercion of v.
+  ;; Aggregate overflow and Int64 wire representability are separate domains.
+  (or (integer? v)
+      (and (number? v)
+           (try
+             (let [d (double v)]
+               (and (== d d) (not= d ##Inf) (not= d ##-Inf)))
+             (catch Throwable _ false)))))
+
 (defrecord SdkInstrument [kind name description unit boundaries monotonic? callback state clock]
   api/Counter
   (add! [this v] (api/add! this v {}))
   (add! [this v attrs]
-    (when (neg? v)
+    (when (finite-sum-admission? v)
       ;; The spec says a negative add to a monotonic counter is a caller error.
       ;; Ignoring it (loudly) beats corrupting the series or throwing into the
       ;; application, since a counter that goes down is unrepresentable downstream.
-      (binding [*out* *err*]
-        (println "otel: ignoring negative add to counter" name)))
-    (when-not (neg? v)
-      (let [[attributes dropped-count] (point-attributes attrs)]
-        (swap! state update attributes update-number-cell v dropped-count)))
+      (if (neg? v)
+        (binding [*out* *err*]
+          (println "otel: ignoring negative add to counter" name))
+        (let [[attributes dropped-count] (point-attributes attrs)]
+          (swap! state update attributes update-number-cell v dropped-count))))
     this)
 
   api/UpDownCounter
   (add-delta! [this v] (api/add-delta! this v {}))
   (add-delta! [this v attrs]
-    (let [[attributes dropped-count] (point-attributes attrs)]
-      (swap! state update attributes update-number-cell v dropped-count))
+    (when (finite-sum-admission? v)
+      (let [[attributes dropped-count] (point-attributes attrs)]
+        (swap! state update attributes update-number-cell v dropped-count)))
     this)
 
   api/Histogram
   (record! [this v] (api/record! this v {}))
   (record! [this v attrs]
-    (let [[attributes dropped-count] (point-attributes attrs)]
-      (swap! state update attributes record-histogram boundaries v dropped-count))
+    (when-some [d (finite-histogram-measurement v)]
+      (let [[attributes dropped-count] (point-attributes attrs)]
+        (swap! state update attributes record-histogram boundaries d dropped-count)))
     this)
 
   api/Gauge
@@ -209,10 +233,32 @@
 
 ;; --- meter and provider -----------------------------------------------------
 
+(defn- histogram-boundaries [boundaries]
+  ;; OTLP explicit bounds are doubles. Validate their canonical wire domain
+  ;; before publishing an instrument; never sort or collapse invalid buckets.
+  (let [invalid! (fn [reason]
+                   (throw (ex-info "Invalid histogram boundaries"
+                                   {:type ::invalid-histogram-boundaries
+                                    :reason reason})))
+        supplied (if (nil? boundaries) default-boundaries boundaries)]
+    (when-not (sequential? supplied) (invalid! :invalid-shape))
+    (let [canonical (mapv (fn [value]
+                            (when-not (number? value)
+                              (invalid! :invalid-type))
+                            (let [d (double value)]
+                              (when-not (and (== d d) (not= d ##Inf) (not= d ##-Inf))
+                                (invalid! :nonfinite))
+                              d)) supplied)]
+      (when-not (or (empty? canonical) (apply < canonical))
+        (invalid! :not-increasing))
+      canonical)))
+
 (defn- register!
   [meter kind nm {:keys [description unit boundaries]} callback]
   (let [inst (->SdkInstrument kind nm description unit
-                              (or boundaries default-boundaries)
+                              (if (= kind :histogram)
+                                (histogram-boundaries boundaries)
+                                (or boundaries default-boundaries))
                               (contains? #{:counter :observable-counter} kind)
                               callback
                               (atom {})

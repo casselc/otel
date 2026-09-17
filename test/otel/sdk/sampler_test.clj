@@ -60,6 +60,53 @@
           d2 (:decision (sampler/should-sample s (params {:trace-id t :name "other"})))]
       (is (= d1 d2)))))
 
+(deftest ratio-sampler-reconstructs-the-complete-signed-low-half
+  (doseq [prefix ["1000000000000000" "fedcba9876543210"]
+          [suffix expected]
+          [["0000000000000000" 0]
+           ["0000000000000001" 1]
+           ["7fffffffffffffff" 9223372036854775807]
+           ["8000000000000000" -9223372036854775808]
+           ["ffffffffffffffff" -1]]]
+    (let [trace-id (str prefix suffix)]
+      (is (= expected (#'sampler/trace-id-random-part trace-id)))
+      (is (= :record-and-sample
+             (:decision (sampler/should-sample (sampler/trace-id-ratio 1.0)
+                                               (params {:trace-id trace-id})))))
+      (is (= :drop
+             (:decision (sampler/should-sample (sampler/trace-id-ratio 0.0)
+                                               (params {:trace-id trace-id}))))))))
+
+(deftest ratio-sampler-compares-both-signed-magnitude-thresholds
+  (let [s (sampler/trace-id-ratio 0.5)]
+    (doseq [prefix ["1000000000000000" "fedcba9876543210"]
+            [suffix expected]
+            [["3fffffffffffffff" :record-and-sample]
+             ["4000000000000000" :drop]
+             ["c000000000000000" :drop]
+             ["c000000000000001" :record-and-sample]]]
+      (is (= expected (:decision (sampler/should-sample
+                                   s (params {:trace-id (str prefix suffix)}))))))))
+
+(deftest ratio-sampler-rejects-malformed-low-halves-and-accepts-uppercase-hex
+  (doseq [suffix ["00000001+0000001" "00000001-0000001"
+                  "+000000100000001" "-000000100000001"
+                  "000000010000000g"]]
+    (let [error (try (#'sampler/trace-id-random-part (str "1000000000000000" suffix))
+                     nil (catch Throwable error error))]
+      (is (some? error))
+      (is (= {:type :otel.sdk.sampler/invalid-trace-id-low-half} (ex-data error)))
+      (is (= "Invalid trace ID low half" (ex-message error)))
+      (is (nil? (ex-cause error)))))
+  (let [trace-id "1000000000000000FFFFFFFFFFFFFFFF"]
+    (is (= -1 (#'sampler/trace-id-random-part trace-id)))
+    (is (= :record-and-sample
+           (:decision (sampler/should-sample (sampler/trace-id-ratio 1.0)
+                                             (params {:trace-id trace-id})))))
+    (is (= :drop
+           (:decision (sampler/should-sample (sampler/trace-id-ratio 0.0)
+                                             (params {:trace-id trace-id})))))))
+
 (deftest ratio-sampler-describes-its-ratio
   (is (= "TraceIdRatioBased{0.25}" (sampler/description (sampler/trace-id-ratio 0.25)))))
 

@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- Preserve numeric histogram boundaries, including ratios and decimals, while
+  validating their finite, strictly ordered double wire representation before
+  registration (Refs #3). Precision collisions and overflow still reject
+  without publishing an instrument; nil defaults and empty bounds are unchanged.
+
+- Ignore non-numeric or non-finite synchronous counter/up-down counter inputs
+  before attribute normalization or series mutation (Refs #3). Preserve original
+  accepted numeric values, negative-counter warnings and signed up/down adds.
+  Int64 wire representability and aggregate overflow remain separate domains.
+
+- Ignore non-numeric or non-finite histogram measurements before attribute
+  normalization or series mutation, preserving convertible finite numbers and
+  existing negative-value behavior (Refs #3). This histogram-only guard does
+  not guarantee against aggregate overflow from multiple finite measurements.
+
+- Parse ratio-sampler trace-ID halves using two signed-Long-safe 32-bit chunks
+  and exact reconstruction, preserving all signed 64-bit sampling decisions.
+  This removes reliance on permissive out-of-range `Long/parseLong` behavior;
+  ratio formulas and endpoint semantics are unchanged.
+  Malformed low halves, including internal chunk signs, reject with a fixed
+  safe diagnostic; this is not an expanded full trace-ID validation policy.
+
+- Canonicalize histogram boundaries to finite doubles before instrument
+  registration and reject unordered, duplicate or precision-colliding bounds
+  without publishing an instrument. Nil retains the default boundaries and an
+  explicit empty vector retains one bucket. This aligns SDK collection with
+  the OTLP explicit-bound wire domain (existing metric-domain work in #3).
+
 - Allow tracer providers to use an explicit ID generator for deterministic
   replay while retaining OS entropy by default. Generated root trace IDs carry
   per-ID random provenance, so the W3C random flag is set only for random IDs;

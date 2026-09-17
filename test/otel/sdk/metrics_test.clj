@@ -139,7 +139,119 @@
       (is (= 20 (:value (first async-points)))
           "duplicate async attributes retain last value without duplicate points"))))
 
+(deftest invalid-synchronous-sum-measurements-do-not-touch-series-or-attributes
+  (let [overflow (/ (reduce *' 1N (repeat 40 10000000000N)) 3)]
+    (doseq [[constructor record] [[api/counter api/add!]
+                                 [api/up-down-counter api/add-delta!]]
+            v [##NaN ##Inf ##-Inf nil false "not-a-number" {:private "fixture"} overflow]]
+      (let [{:keys [provider meter]} (setup)
+            instrument (constructor meter "finite-sum")
+            calls (atom 0)
+            normalize attributes/normalize-result]
+        (record instrument 5 {"series" "kept"})
+        (let [before @(:state instrument)]
+          (with-redefs [attributes/normalize-result
+                        (fn [& args] (swap! calls inc) (apply normalize args))]
+            (doseq [attrs [{"series" "kept"} {"series" "fresh"}]]
+              (let [result (try {:returned (record instrument v attrs)}
+                                (catch Throwable _ {:threw true}))]
+                (is (not (:threw result)))
+                (is (identical? instrument (:returned result)))))
+            (is (zero? @calls)))
+          (is (= before @(:state instrument))))
+        (record instrument 7 {"series" "kept"})
+        (let [m (metric-named provider "finite-sum")]
+          (is (= 1 (count (:data-points m))))
+          (is (= 12 (:value (point-for m {"series" "kept"})))))))))
+
+(deftest negative-finite-counter-adds-retain-rejection-and-fluent-return
+  (doseq [v [-1 -1/2 -1.5M]]
+    (let [{:keys [meter]} (setup)
+          counter (api/counter meter "negative-counter")
+          calls (atom 0)
+          normalize attributes/normalize-result]
+      (api/add! counter 5 {"series" "kept"})
+      (let [before @(:state counter)]
+        (with-redefs [attributes/normalize-result
+                      (fn [& args] (swap! calls inc) (apply normalize args))]
+          (doseq [attrs [{"series" "kept"} {"series" "fresh"}]]
+            (is (identical? counter (api/add! counter v attrs))))
+          (is (zero? @calls)))
+        (is (= before @(:state counter)))))))
+
+(deftest synchronous-sums-retain-existing-finite-number-domains
+  (doseq [[constructor record signed?] [[api/counter api/add! false]
+                                       [api/up-down-counter api/add-delta! true]]
+          v (cond-> [0 9007199254740993 9223372036854775807
+                     (reduce *' 1N (repeat 40 10000000000N))
+                     1/2 1.5M 0.0 -0.0 4.9e-324 1.7976931348623157e308]
+              signed? (conj -2 -1/2 -1.5M))]
+    ;; Independent cells avoid finite aggregate overflow. Huge integers retain
+    ;; the existing SDK arithmetic domain; their OTLP Int64 admission is separate.
+    (let [{:keys [provider meter]} (setup)
+          instrument (constructor meter "accepted-sum")]
+      (is (identical? instrument (record instrument v)))
+      (let [actual (:value (point-for (metric-named provider "accepted-sum") {}))]
+        (if (integer? v)
+          (do (is (integer? actual)) (is (= v actual)))
+          (is (== v actual)))))))
+
+(deftest rejected-synchronous-sum-inputs-preserve-temporality-and-sign-policy
+  (doseq [temporality [:cumulative :delta]
+          [constructor record delta] [[api/counter api/add! 2]
+                                       [api/up-down-counter api/add-delta! -2]]]
+    (let [{:keys [provider meter]} (setup {:temporality temporality})
+          instrument (constructor meter "temporal-sum")]
+      (record instrument 5)
+      (doseq [bad [##NaN ##Inf ##-Inf]] (record instrument bad))
+      (is (= 5 (:value (point-for (metric-named provider "temporal-sum") {}))))
+      (record instrument delta)
+      (is (= (if (= temporality :delta) delta (+ 5 delta))
+             (:value (point-for (metric-named provider "temporal-sum") {})))))))
+
 ;; --- histograms -------------------------------------------------------------
+
+(deftest invalid-histogram-measurements-do-not-touch-series-or-attributes
+  (doseq [v [##NaN ##Inf ##-Inf nil false "not-a-number" {:private "fixture"}
+             (reduce *' 1N (repeat 40 10000000000N))]]
+    (let [{:keys [provider meter]} (setup)
+          h (api/histogram meter "finite" {:boundaries [10]})
+          calls (atom 0)
+          normalize attributes/normalize-result]
+      (api/record! h 5 {"series" "kept"})
+      (let [before @(:state h)]
+        (with-redefs [attributes/normalize-result
+                      (fn [& args] (swap! calls inc) (apply normalize args))]
+          (doseq [attrs [{"series" "kept"} {"series" "fresh"}]]
+            (let [result (try {:returned (api/record! h v attrs)}
+                              (catch Throwable _ {:threw true}))]
+              (is (not (:threw result)))
+              (is (identical? h (:returned result)))))
+          (is (zero? @calls)))
+        (is (= before @(:state h))))
+      (api/record! h 7 {"series" "kept"})
+      (let [m (metric-named provider "finite")
+            p (point-for m {"series" "kept"})]
+        (is (= 1 (count (:data-points m))))
+        (is (= [2 0] (:bucket-counts p)))
+        (is (= 2 (:count p)))
+        (is (== 12.0 (:sum p)))
+        (is (== 5.0 (:min p)))
+        (is (== 7.0 (:max p)))))))
+
+(deftest finite-histogram-measurements-retain-negative-zero-subnormal-and-endpoint
+  (doseq [[v buckets] [[-1.0 [1 0]] [0.0 [1 0]] [-0.0 [1 0]]
+                        [1/2 [1 0]] [1.5M [1 0]]
+                        [4.9e-324 [1 0]] [10.0 [1 0]] [11.0 [0 1]]
+                        [1.7976931348623157e308 [0 1]]]]
+    ;; Separate cells keep finite-input sum overflow outside this control.
+    (let [{:keys [provider meter]} (setup)
+          h (api/histogram meter "accepted" {:boundaries [10]})]
+      (is (identical? h (api/record! h v)))
+      (let [p (point-for (metric-named provider "accepted") {})]
+        (is (= 1 (:count p)))
+        (is (= buckets (:bucket-counts p)))
+        (is (== (double v) (:sum p) (:min p) (:max p)))))))
 
 (deftest histogram-aggregates-a-distribution
   (let [{:keys [provider meter]} (setup)
@@ -170,6 +282,57 @@
     (is (= sdk/default-boundaries (:explicit-bounds (metric-named provider "h"))))))
 
 ;; --- asynchronous instruments -----------------------------------------------
+
+(deftest histogram-boundaries-canonicalize-before-registration
+  (doseq [[supplied expected measurements buckets]
+          [[[0 1] [0.0 1.0] [-1 0 0.5 1 2] [2 2 1]]
+           [[(/ -3 2) (/ 1 2)] [-1.5 0.5] [-2 -1.5 0 0.5 1] [2 2 1]]
+           [[(bigdec "-1.5") (bigdec "0.5")] [-1.5 0.5] [-2 -1.5 0 0.5 1] [2 2 1]]
+           [[-2 (/ -1 2) (bigdec "0.5") 2.0] [-2.0 -0.5 0.5 2.0]
+            [-3 -2 -1 0 1 2 3] [2 1 1 2 1]]
+           [[-2.5 0.0 1.5] [-2.5 0.0 1.5] [-3 -2.5 0 1.5 2] [2 1 1 1]]
+           [[1] [1.0] [0 1 2] [2 1]]
+           [[] [] [-1 0 1] [3]]
+           [nil sdk/default-boundaries [1] nil]]]
+    (let [{:keys [provider meter]} (setup)
+          h (api/histogram meter "canonical" {:boundaries supplied})]
+      (doseq [v measurements] (api/record! h v))
+      (let [m (metric-named provider "canonical") p (point-for m {})]
+        (is (= expected (:explicit-bounds m)))
+        (is (every? float? (:explicit-bounds m)))
+        (is (= (inc (count expected)) (count (:bucket-counts p))))
+        (is (= (count measurements) (:count p) (reduce + (:bucket-counts p))))
+        (when buckets (is (= buckets (:bucket-counts p))))))))
+
+(deftest invalid-histogram-boundaries-never-publish-an-instrument
+  (doseq [[supplied reason]
+          [[[1 1] :not-increasing] [[2 1] :not-increasing]
+           [[0.0 -0.0] :not-increasing]
+           [[9007199254740992 9007199254740993] :not-increasing]
+           [[(bigdec "9007199254740992") (bigdec "9007199254740993")] :not-increasing]
+           [[9007199254740992 (/ 18014398509481985N 2)] :not-increasing]
+           [[##NaN] :nonfinite] [[##Inf] :nonfinite] [[##-Inf] :nonfinite]
+           [[(reduce *' 1N (repeat 40 10000000000N))] :nonfinite]
+           [[(bigdec "1e400")] :nonfinite]
+           [[(/ (reduce *' 1N (repeat 40 10000000000N)) 3)] :nonfinite]
+           [["secret-bearing-invalid-bound"] :invalid-type]
+           [[nil] :invalid-type] [[false] :invalid-type]
+           ["secret-bearing-invalid-envelope" :invalid-shape]
+           [{} :invalid-shape]]]
+    (let [{:keys [provider meter]} (setup)
+          prior (api/histogram meter "prior" {:boundaries [1]})
+          before @(:instruments meter)
+          error (try (api/histogram meter "invalid" {:boundaries supplied}) nil
+                     (catch Throwable error error))]
+      (is (some? error))
+      (is (= {:type :otel.sdk.metrics/invalid-histogram-boundaries :reason reason}
+             (ex-data error)))
+      (is (= "Invalid histogram boundaries" (ex-message error)))
+      (is (nil? (ex-cause error)))
+      (is (= (count before) (count @(:instruments meter))))
+      (is (every? true? (map identical? before @(:instruments meter))))
+      (api/record! prior 1)
+      (is (= [1 0] (:bucket-counts (point-for (metric-named provider "prior") {})))))))
 
 (deftest observable-gauge-reads-on-collection
   (let [{:keys [provider meter]} (setup)
