@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Add a closed `otel.sdk/shutdown-status` ownership witness, separate from
+  shutdown success. Maintained processors retire caller export admission and
+  track in-flight operations; unknown components remain unconfirmed. The
+  witness separates SDK operation settlement from exporter resource settlement
+  and refreshes without replaying shutdown. Exporter failures remain unconfirmed
+  unless the exporter supplies its own stable retired-settlement witness;
+  literal-true release declares the documented release contract fulfilled.
+  It does not change cached shutdown values or Throwable identity or guarantee
+  telemetry delivery.
+
 - Require Jolt 0.8.6 or newer and run hosted tests on its checksum-pinned
   release, with isolated compiler-version caches and matching minimum-version
   and toolchain checks.

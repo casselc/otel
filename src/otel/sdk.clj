@@ -230,6 +230,9 @@
         :meter-provider mp
         :logger-provider lp
         :reader reader
+        :shutdown-components (cond-> (vec processors)
+                               reader (conj reader)
+                               lp (conj lp))
         :terminal (lifecycle/terminal-action)
         :previous-logger-factory previous-factory
         :propagator propagation/default-propagator}))))
@@ -249,6 +252,22 @@
 (defn- component-handle?
   [handle]
   (boolean (some #(some? (get handle %)) shutdown-component-keys)))
+
+(defn shutdown-status
+  "Closed nonblocking ownership evidence for the handle returned by init!.
+  A failed terminal action is not quiescence proof. Both SDK operations and
+  exporter resources must be settled. Exporter release must declare literal
+  true or supply its own stable retired-settlement witness; failed/void release
+  and unknown/custom components remain unconfirmed. Later settlement refreshes this observation
+  without replaying shutdown. No resource, exception or payload is returned."
+  [handle]
+  (let [terminal (:terminal handle)
+        components (cond
+                     (:disabled? handle) []
+                     (contains? handle :shutdown-components) (:shutdown-components handle)
+                     :else [nil])]
+    (assoc (lifecycle/combined-settlement components terminal)
+           :otel.sdk.shutdown-status/version 1)))
 
 (defn shutdown!
   "Flush and stop everything `init!` started, and clear the global registry.

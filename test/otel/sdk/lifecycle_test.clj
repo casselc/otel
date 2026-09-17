@@ -14,6 +14,225 @@
             [otel.sdk.metrics :as metrics]
             [otel.sdk.tracer :as tracer]))
 
+(defn- witness-sdk [processor]
+  (sdk/init! {:span-processors [processor] :exporter :none
+              :metrics? false :logs? false :runtime-metrics? false}))
+
+(deftest shutdown-witness-separates-cached-failure-from-quiescence
+  (doseq [throwing? [false true]]
+    (let [calls (atom 0)
+          failure (ex-info "inert fixture failure" {})
+          exporter (reify lifecycle/SettlementWitness
+                     (settlement-status [_]
+                       ;; This inert exporter has no background admission or
+                       ;; resources; callback completion is its explicit proof.
+                       {:quiescence (if (pos? @calls) :confirmed :unconfirmed)})
+                     export/SpanExporter
+                     (export-spans! [_ _] true)
+                     (flush-exporter! [_] true)
+                     (shutdown-exporter! [_]
+                       (swap! calls inc)
+                       (if throwing? (throw failure) false)))
+          owner (witness-sdk (export/simple-processor exporter))
+          stop #(try (sdk/shutdown! owner)
+                     (catch :default error error))]
+      (is (= :unconfirmed (:quiescence (sdk/shutdown-status owner))))
+      (let [first-result (stop)]
+        (if throwing?
+          (is (identical? failure first-result))
+          (is (false? first-result)))
+        (is (identical? first-result (stop))))
+      (is (= 1 @calls))
+      (is (= (if throwing? :threw :returned-false)
+             (:terminal (sdk/shutdown-status owner))))
+      (is (= :confirmed (:quiescence (sdk/shutdown-status owner)))))))
+
+(deftest shutdown-witness-leaves-foreign-components-unconfirmed
+  (let [unknown (reify export/SpanProcessor
+                  (on-start [_ _ _] nil) (on-end [_ _] nil)
+                  (force-flush! [_] true) (shutdown! [_] true))
+        owner (witness-sdk unknown)]
+    (is (true? (sdk/shutdown! owner)))
+    (is (= :returned-true (:terminal (sdk/shutdown-status owner))))
+    (is (= :unconfirmed (:quiescence (sdk/shutdown-status owner))))
+    (is (= [{:quiescence :unconfirmed}]
+           (:components (sdk/shutdown-status owner))))))
+
+(deftest shutdown-witness-refreshes-after-timed-out-worker-exits
+  (let [entered (promise) release (promise) closes (atom 0)
+        worker (Thread. (fn [] (deliver entered true) @release))
+        state (atom {:shutdown? false :queue [] :failed-span-count 0})
+        exporter (reify export/SpanExporter
+                   (export-spans! [_ _] true) (flush-exporter! [_] true)
+                   (shutdown-exporter! [_] (swap! closes inc) true))
+        processor (export/->BatchSpanProcessor exporter state
+                     {:max-export-batch-size 1} worker (lifecycle/terminal-action))]
+    (.start worker)
+    (try
+      (is (= true (deref entered 2000 :timeout)))
+      (let [owner (witness-sdk processor)
+            stop #(try (sdk/shutdown! owner) (catch :default error error))
+            failure (with-redefs [lifecycle/shutdown-cancel-grace-ms 1
+                                  lifecycle/shutdown-join-bound-ms 5]
+                      (stop))]
+        (is (= :worker-join-timeout (:otel.sdk/error (ex-data failure))))
+        (is (= :unconfirmed (:quiescence (sdk/shutdown-status owner))))
+        (is (zero? @closes))
+        (deliver release true)
+        (.join worker 2000)
+        (is (not (.isAlive worker)))
+        (is (= :confirmed (:sdk-quiescence (sdk/shutdown-status owner))))
+        (is (= :unconfirmed (:exporter-quiescence (sdk/shutdown-status owner))))
+        (is (= :unconfirmed (:quiescence (sdk/shutdown-status owner))))
+        (is (identical? failure (stop)))
+        (is (zero? @closes) "observing settlement must never replay shutdown"))
+      (finally (deliver release true) (.join worker 2000)))))
+
+(deftest shutdown-witness-counts-admitted-caller-and-denies-late-flush
+  (let [entered (promise) release (promise) stopped (promise)
+        calls (atom 0) closes (atom 0)
+        exporter (reify export/SpanExporter
+                   (export-spans! [_ _] true)
+                   (flush-exporter! [_]
+                     (swap! calls inc) (deliver entered true) @release true)
+                   (shutdown-exporter! [_] (swap! closes inc) true))
+        processor (export/simple-processor exporter)
+        owner (witness-sdk processor)
+        caller (Thread. #(export/force-flush! processor))
+        stop-caller (Thread. #(deliver stopped (sdk/shutdown! owner)))]
+    (.start caller)
+    (try
+      (is (= true (deref entered 2000 :timeout)))
+      (.start stop-caller)
+      (is (= :unconfirmed (:quiescence (sdk/shutdown-status owner))))
+      (is (zero? @closes))
+      (deliver release true)
+      (.join caller 2000) (.join stop-caller 2000)
+      (is (not (.isAlive caller)))
+      (is (not (.isAlive stop-caller)))
+      (is (= true (deref stopped 2000 :timeout)))
+      (is (= :confirmed (:quiescence (sdk/shutdown-status owner))))
+      (is (false? (export/force-flush! processor)))
+      (is (= 1 @calls))
+      (is (= 1 @closes))
+      (finally (deliver release true)
+               (.join caller 2000) (.join stop-caller 2000)))))
+
+(deftest shutdown-witness-covers-all-sdk-signals-and-empty-ownership
+  (let [closes (atom [])
+        exporter (reify
+                   export/SpanExporter
+                   (export-spans! [_ _] true) (flush-exporter! [_] true)
+                   (shutdown-exporter! [_] (swap! closes conj :spans) true)
+                   logs/LogRecordExporter
+                   (export-logs! [_ _] true)
+                   (shutdown-log-exporter! [_] (swap! closes conj :logs) true)
+                   export/MetricExporter
+                   (export-metrics! [_ _ _] true)
+                   (shutdown-metric-exporter! [_] (swap! closes conj :metrics) true))
+        owner (sdk/init! {:exporter exporter :processor :simple
+                          :metrics? true :logs? true :runtime-metrics? false
+                          :bridge-logging? false})]
+    (is (true? (sdk/shutdown! owner)))
+    (is (= #{:spans :logs :metrics} (set @closes)))
+    (is (= 3 (count @closes)))
+    (is (= 3 (count (:components (sdk/shutdown-status owner)))))
+    (is (= :confirmed (:quiescence (sdk/shutdown-status owner))))
+    (is (true? (sdk/shutdown! owner)))
+    (is (= 3 (count @closes))))
+  (testing "invalid/nil handles never establish ownership proof"
+    (is (= :unconfirmed (:quiescence (sdk/shutdown-status nil))))
+    (is (= :unconfirmed (:quiescence (sdk/shutdown-status {})))))
+  (testing "disabled shape has no owned resources but still requires completed stop"
+    (let [owner {:disabled? true :terminal (lifecycle/terminal-action)}]
+      (is (= :unconfirmed (:quiescence (sdk/shutdown-status owner))))
+      (is (true? (sdk/shutdown! owner)))
+      (is (= :confirmed (:quiescence (sdk/shutdown-status owner))))
+      (is (= [] (:components (sdk/shutdown-status owner)))))))
+
+(deftest shutdown-witness-does-not-publish-protocol-payloads
+  (let [canary "inert-custom-secret"
+        component (reify lifecycle/SettlementWitness
+                    (settlement-status [_]
+                      {:quiescence canary :terminal (Exception. canary)
+                       :resource canary :components [{:message canary}]}))
+        result (lifecycle/component-settlement component)]
+    (is (= {:quiescence :unconfirmed :terminal :unknown
+            :sdk-quiescence :unconfirmed :exporter-quiescence :unconfirmed} result))
+    (is (not (str/includes? (pr-str result) canary)))))
+
+(deftest shutdown-witness-requires-exporter-owned-background-settlement
+  (doseq [throwing? [false true] witness? [false true]]
+    (let [entered (promise) release (promise) retired? (atom false)
+          calls (atom 0) native-closes (atom 0)
+          failure (ex-info "inert exporter background failure" {})
+          worker (Thread. (fn [] (deliver entered true) @release))
+          close! (fn []
+                   (reset! retired? true) (swap! calls inc)
+                   (if throwing? (throw failure) false))
+          exporter (if witness?
+                     (reify
+                       lifecycle/SettlementWitness
+                       (settlement-status [_]
+                         {:quiescence (if (and @retired? (not (.isAlive worker)))
+                                        :confirmed :unconfirmed)})
+                       export/SpanExporter
+                       (export-spans! [_ _] true) (flush-exporter! [_] true)
+                       (shutdown-exporter! [_] (close!)))
+                     (reify export/SpanExporter
+                       (export-spans! [_ _] true) (flush-exporter! [_] true)
+                       (shutdown-exporter! [_] (close!))))
+          owner (witness-sdk (export/simple-processor exporter))
+          stop #(try (sdk/shutdown! owner) (catch :default error error))
+          maybe-close-native! #(when (= :confirmed (:quiescence (sdk/shutdown-status owner)))
+                                 (swap! native-closes inc))]
+      (.start worker)
+      (try
+        (is (= true (deref entered 2000 :timeout)))
+        (let [result (stop)]
+          (is (= :confirmed (:sdk-quiescence (sdk/shutdown-status owner))))
+          (is (= :unconfirmed (:exporter-quiescence (sdk/shutdown-status owner))))
+          (is (= :unconfirmed (:quiescence (sdk/shutdown-status owner))))
+          (maybe-close-native!)
+          (is (zero? @native-closes))
+          (is (= 1 @calls))
+          (deliver release true) (.join worker 2000)
+          (is (not (.isAlive worker)))
+          (is (= (if witness? :confirmed :unconfirmed)
+                 (:quiescence (sdk/shutdown-status owner))))
+          (is (identical? result (stop)))
+          (is (= 1 @calls) "status refresh must not replay cached release")
+          (maybe-close-native!)
+          (is (= (if witness? 1 0) @native-closes)))
+        (finally (deliver release true) (.join worker 2000))))))
+
+(deftest shutdown-witness-confirms-successful-release-despite-delivery-failure
+  (let [calls (atom 0)
+        exporter (reify export/SpanExporter
+                   (export-spans! [_ _] false) (flush-exporter! [_] true)
+                   (shutdown-exporter! [_] (swap! calls inc) true))
+        processor (export/batch-processor exporter {:schedule-delay-ms 60000})
+        owner (witness-sdk processor)]
+    ;; Inject the maintained delivery counter, not resource-settlement state.
+    (swap! (:state processor) assoc :failed-span-count 1)
+    (is (false? (sdk/shutdown! owner)))
+    (is (= :returned-false (:terminal (sdk/shutdown-status owner))))
+    (is (= :confirmed (:sdk-quiescence (sdk/shutdown-status owner))))
+    (is (= :confirmed (:exporter-quiescence (sdk/shutdown-status owner))))
+    (is (= :confirmed (:quiescence (sdk/shutdown-status owner))))
+    (is (= 1 @calls))))
+
+(deftest shutdown-witness-does-not-treat-void-or-truthy-markers-as-release-proof
+  (doseq [value [nil false (atom :inert-marker)]]
+    (let [exporter (reify export/SpanExporter
+                     (export-spans! [_ _] true) (flush-exporter! [_] true)
+                     (shutdown-exporter! [_] value))
+          owner (witness-sdk (export/simple-processor exporter))]
+      (sdk/shutdown! owner)
+      (is (= :confirmed (:sdk-quiescence (sdk/shutdown-status owner))))
+      (is (= :unconfirmed (:exporter-quiescence (sdk/shutdown-status owner))))
+      (is (= :unconfirmed (:quiescence (sdk/shutdown-status owner)))))))
+
 (deftest terminal-action-preserves-result-and-throwable-identity
   (testing "a returned object is memoized without boolean coercion"
     (let [terminal (lifecycle/terminal-action)
