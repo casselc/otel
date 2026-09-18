@@ -21,6 +21,14 @@
     otel.context-test
     otel.dependency-resolution-test
     otel.sdk.clock-test
+    otel.sdk.construction-rollback-test
+    otel.sdk.worker-constructor-rollback-test
+    otel.sdk.init-publication-rollback-test
+    otel.sdk.init-failure-receipt-test
+    otel.sdk.init-retry-settlement-test
+    otel.sdk.init-factory-publication-failure-test
+    otel.sdk.registry-publication-lifetime-test
+    otel.sdk-init-failure-test
     otel.sdk.lifecycle-test
     otel.sdk-test
     otel.sdk.logs-test

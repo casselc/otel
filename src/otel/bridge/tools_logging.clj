@@ -18,7 +18,8 @@
   translation."
   (:require [clojure.tools.logging :as log]
             [clojure.tools.logging.impl :as impl]
-            [otel.logs :as logs]))
+            [otel.logs :as logs]
+            [otel.sdk.lifecycle :as lifecycle]))
 
 (defn- exception-attributes
   "Semantic-convention attributes for a throwable attached to a log call."
@@ -66,6 +67,46 @@
   (let [previous log/*logger-factory*]
     (alter-var-root #'log/*logger-factory* (fn [f] (factory f logger-provider)))
     previous))
+
+(defrecord ^:private OwnedInstallation [provider state lock terminal]
+  lifecycle/SettlementWitness
+  (settlement-status [_]
+    {:quiescence (if (and (:retired? @state)
+                         (contains? #{:returned-true :returned-false :threw}
+                                    (lifecycle/terminal-status terminal)))
+                   :confirmed :unconfirmed)}))
+
+(defn installation
+  "Prepare an invocation-owned bridge token before any global mutation."
+  [provider]
+  (->OwnedInstallation provider (atom {}) (Object.) (lifecycle/terminal-action)))
+
+(defn install-owned!
+  "Install using a prepared token. Return the previous factory as install! does."
+  [token]
+  (locking (:lock token)
+    (when (or (:installed @(:state token)) (:retired? @(:state token)))
+      (throw (ex-info "logging installation token was reused"
+                      {:otel.sdk/error :invalid-logging-installation})))
+    (alter-var-root #'log/*logger-factory*
+      (fn [previous]
+        (let [installed (factory previous (:provider token))]
+          ;; Retain identity before publication, including a post-install throw.
+          (reset! (:state token) {:previous previous :installed installed})
+          installed)))
+    (:previous @(:state token))))
+
+(defn retire-installation!
+  "Restore only the factory still owned by this token; preserve replacements."
+  [token]
+  (lifecycle/run-terminal! (:terminal token)
+    #(locking (:lock token)
+       (let [{:keys [previous installed]} @(:state token)]
+         (when installed
+           (alter-var-root #'log/*logger-factory*
+             (fn [current] (if (identical? current installed) previous current))))
+         (swap! (:state token) assoc :retired? true)
+         true))))
 
 (defn uninstall!
   "Restore a factory returned by `install!`."

@@ -226,3 +226,144 @@
                (and (boolean (:value outcome)) ok)
                (or failure (:throwable outcome))))
       (if failure (throw failure) ok))))
+
+(defrecord ^:private ConstructionReceipt [state lock])
+
+(defn construction-receipt
+  "Opaque per-invocation acquisition receipt; never reuse it for another call."
+  []
+  (->ConstructionReceipt (atom {:phase :new :owners []}) (Object.)))
+
+(defn construction-settlement
+  "Closed fresh observation of known acquired owners, not arbitrary advice.
+  Custom component witnesses retain their trusted bounded/nonblocking contract."
+  [receipt]
+  (if (instance? ConstructionReceipt receipt)
+    (let [snapshot @(:state receipt)
+          owners (:owners snapshot)
+          confirmed? (and (:retirement-requested? snapshot)
+                          (contains? #{:failed :returned} (:phase snapshot))
+                          (every? (fn [{:keys [owner terminal]}]
+                                    (and (contains? #{:returned-true :returned-false :threw}
+                                                    (terminal-status terminal))
+                                         (= :confirmed
+                                            (:quiescence (component-settlement owner)))))
+                                  owners))]
+      {:otel.sdk.construction/version 1
+       :quiescence (if confirmed? :confirmed :unconfirmed)})
+    {:otel.sdk.construction/version 1 :quiescence :unconfirmed}))
+
+(defn construction-failure-status
+  "Attest only this invocation's exact reported failure. No error is returned.
+  Missing receipts, reuse errors, successful-return advice throws and replacement
+  errors are unknown even when some previously acquired owners have retired."
+  [receipt error]
+  (if (and (some? error) (instance? ConstructionReceipt receipt)
+           (= :failed (:phase @(:state receipt)))
+           (or (identical? error (:failure @(:state receipt)))
+               (identical? error (:reported-error @(:state receipt)))))
+    (assoc (construction-settlement receipt) :outcome :failed)
+    {:otel.sdk.construction/version 1 :outcome :unknown :quiescence :unconfirmed}))
+
+(defn acquire-owner!
+  "Register a known owner before starting its resource users; retain it privately."
+  ([receipt owner close!] (acquire-owner! receipt owner close! nil))
+  ([receipt owner close! resource]
+  (locking (:lock receipt)
+    (when-not (= :acquiring (:phase @(:state receipt)))
+      (throw (ex-info "construction receipt is not acquiring"
+                      {:otel.sdk/error :invalid-construction-receipt})))
+    (swap! (:state receipt) update :owners conj
+           {:owner owner :close! close! :resource resource
+            :terminal (terminal-action)}))
+  owner))
+
+(defn construction-resource-status
+  "Closed transfer classification for an exact built-in invocation/resource.
+  Claims are a trusted constructor contract, not hostile-forgery protection."
+  [receipt error resource signal]
+  (let [snapshot (when (instance? ConstructionReceipt receipt) @(:state receipt))
+        failed? (and (some? error) (= :failed (:phase snapshot))
+                     (or (identical? error (:failure snapshot))
+                         (identical? error (:reported-error snapshot))))
+        returned? (and (nil? error) (= :returned (:phase snapshot)))
+        claimed? (and (some? resource)
+                      (some #(and (identical? resource (:exporter (:resource %)))
+                                  (= signal (:signal (:resource %))))
+                            (:owners snapshot)))
+        ownership (cond
+                    (and (or failed? returned?) claimed?) :child-owned
+                    (and failed? (empty? (:owners snapshot))) :orphan
+                    :else :unknown)]
+    {:otel.sdk.construction/version 1 :ownership ownership}))
+
+(defn retire-construction!
+  "Serialized exactly-once retirement, with fresh proof on every retry.
+  A terminal throw/false does not itself grant cleanup permission."
+  [receipt]
+  (locking (:lock receipt)
+    ;; Never close a record while its constructor might still start the worker.
+    ;; Acquisition is sealed by return/failure before retirement can begin.
+    (when (contains? #{:failed :returned} (:phase @(:state receipt)))
+      (swap! (:state receipt) assoc :retirement-requested? true)
+      (doseq [{:keys [close! terminal]} (reverse (:owners @(:state receipt)))]
+        (try (run-terminal! terminal close!) (catch :default _ nil))))
+    (let [settlement (construction-settlement receipt)]
+      (assoc settlement :status
+             (if (= :confirmed (:quiescence settlement)) :closed :closing)))))
+
+(defn with-construction!
+  "One acquisition attempt. Rethrow the original failure only after retirement;
+  otherwise transfer an opaque retry owner through closed exception data.
+  Original errors/resources/configuration are never copied into diagnostic data."
+  [receipt action]
+  (when-not (and (instance? ConstructionReceipt receipt)
+                (locking (:lock receipt)
+                  (when (= :new (:phase @(:state receipt)))
+                    (swap! (:state receipt) assoc :phase :acquiring)
+                    true)))
+    (throw (ex-info "construction receipt was missing or reused"
+                    {:otel.sdk/error :invalid-construction-receipt})))
+  (try
+    (let [result (action)]
+      (swap! (:state receipt) assoc :phase :returned)
+      result)
+    (catch :default original
+      (swap! (:state receipt) assoc :phase :failed :failure original)
+      (let [retry-stop! #(retire-construction! receipt)
+            result (retry-stop!)]
+        (if (= :closed (:status result))
+          (throw original)
+          (let [reported (ex-info "SDK constructor cleanup remains incomplete"
+                                  {:otel.sdk/error :construction-cleanup-incomplete
+                                   :retry-stop! retry-stop!})]
+            (swap! (:state receipt) assoc :reported-error reported)
+            (throw reported)))))))
+
+(defn acquire-child!
+  "Preinstall a child receipt before invoking its constructor. A throw without
+  matching built-in failure evidence stays unknown, not an empty-owner proof."
+  [receipt construct]
+  (let [child (construction-receipt) failure (atom nil)
+        observer (reify SettlementWitness
+                   (settlement-status [_]
+                     (if-let [error @failure]
+                       (construction-failure-status child error)
+                       (construction-settlement child))))]
+    (acquire-owner! receipt observer #(retire-construction! child))
+    (try (construct child)
+         (catch :default error
+           (reset! failure error)
+           (throw error)))))
+
+(defn start-owned-worker!
+  "Start only after its full owner/terminal record has been acquired privately."
+  [receipt owner worker]
+  (when-not (and (= :acquiring (:phase @(:state receipt)))
+                 (identical? worker (:worker owner))
+                 (some #(identical? owner (:owner %)) (:owners @(:state receipt))))
+    (throw (ex-info "worker owner was not acquired before start"
+                    {:otel.sdk/error :unacquired-worker-owner})))
+  (.setDaemon worker true)
+  (.start worker)
+  owner)

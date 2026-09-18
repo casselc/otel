@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Roll back SDK startup using incrementally acquired worker and exporter-face
+  ownership, preserving exporter identity and the original error when cleanup
+  is confirmed. Expose an optional per-invocation construction receipt and an
+  opaque retry owner when settlement is incomplete; unknown factory or wrapper
+  failures remain fail-closed. Retry observations do not replay release actions.
+  Restore only owned logging/publication state, and coordinate SDK registry
+  lifetime so rollback cannot resurrect a retired previous SDK. Notification
+  errors do not skip resource cleanup. Register constructor, partial-startup,
+  timeout, retry and publication regressions in the maintained test runner.
+  These tests address acquisition gaps outside the returned-handle shutdown
+  model; custom witnesses remain trusted and do not establish telemetry delivery
+  or native persistence (Refs #43).
+
 - Add implementation-connected settlement journals for admitted callers,
   worker completion, strict exporter release and refreshed ownership proof.
   Observe exactly-once release outcomes without changing values or errors,
