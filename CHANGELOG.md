@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Account exact span-exporter faces during independent pipeline construction so
+  failed partial startup distinguishes acquired destinations from explicitly
+  untouched ones. Require confirmed rollback before transferring untouched
+  cleanup ownership; preserve per-destination callbacks and exporter identity.
+  Capture and invoke the same attested constructor; foreign successful returns
+  cannot grant cleanup permission. Add maintained-worker, alias, hidden-user,
+  check/use and fresh-proof controls to the canonical runner (Refs #43).
+
 - Expose closed, per-signal startup face transfer observations tied to the exact
   construction receipt, reported error and exporter identity. Explicit untouched
   faces require confirmed rollback; SDK-owned faces must not be independently

@@ -160,6 +160,16 @@ and unreturned factories cannot become orphan ownership merely from absent claim
 The returned `:quiescence` is separate from transfer and freshly observes
 constructor-owned users, not the untouched exporter's own independent users.
 
+For failed `export/independent-batch-pipelines` construction, pass a fresh receipt
+as its second argument and query `export/construction-face-status` with the
+exact failure and original destination exporter. Only `:spans` is accounted.
+An acquired destination is `:sdk-owned`; an explicitly untouched destination
+can be `:unacquired` only after all constructor-owned users settle. Other signals
+and replaced constructors remain unknown, including replacements that return
+successfully. Shared exporter objects retain existing per-destination shutdown
+behavior; never add a caller shutdown to an acquired alias. These observations
+do not replace settlement checks for independent exporter users or native owners.
+
 Custom settlement witnesses are a trusted contract: they must be truthful,
 permanently stable after retirement, bounded and nonblocking. This is ownership
 proof, not delivery or native-persistence proof. After a worker timeout, retries
