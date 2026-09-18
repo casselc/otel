@@ -406,6 +406,22 @@
   (shutdown! [this]
     (every-pipeline-ok? (shutdown-pipelines! this))))
 
+(def ^:private maintained-pipeline-factory batch-processor)
+
+(defn- enter-pipeline-factory! [receipt destinations exporter factory]
+  (if (identical? factory maintained-pipeline-factory)
+    (lifecycle/mark-construction-face! receipt exporter :spans :sdk-owned)
+    ;; A replacement can close over any input, including on successful returns.
+    (doseq [[_ options] destinations]
+      (lifecycle/mark-construction-face! receipt (:exporter options)
+                                         :spans :foreign-unknown))))
+
+(defn construction-face-status
+  "Closed transfer evidence for an exact failed pipeline invocation/span face.
+  Other signals and absent ledger entries are unknown, never orphan permission."
+  [receipt error exporter signal]
+  (lifecycle/construction-face-status receipt error exporter signal))
+
 (defn- independent-batch-pipelines-owned
   "Build one span processor composed of named, independently bounded batches.
 
@@ -428,28 +444,38 @@
     (when-not (map? options)
       (throw (ex-info "span pipeline options must be a map"
                       {:destination destination})))
-    (let [{:keys [exporter config]} options]
+    (let [{:keys [exporter]} options]
       (when-not (satisfies? SpanExporter exporter)
         (throw (ex-info "span pipeline requires a SpanExporter"
-                        {:destination destination})))
-      (when-not (or (nil? config) (map? config))
-        (throw (ex-info "span pipeline config must be a map"
-                        {:destination destination})))
-      ;; Validate every effective batch option before constructing any worker.
-      ;; Merely checking the config's shape would let a bad later destination
-      ;; strand workers already created for earlier entries.
-      (try
-        (checked-batch-config config)
-        (catch :default error
-          (throw (ex-info "span pipeline has invalid batch options"
-                          {:destination destination
-                           :option (:option (ex-data error))}))))))
+                        {:destination destination})))))
+  ;; Account only audited span use, before fallible configuration validation.
+  ;; Identity aliases are updated together; every actual child still must settle.
+  (lifecycle/account-construction-faces!
+   receipt (mapv (fn [[_ options]] {:resource (:exporter options) :signal :spans})
+                 destinations))
+  (doseq [[destination {:keys [config]}] destinations]
+    (when-not (or (nil? config) (map? config))
+      (throw (ex-info "span pipeline config must be a map"
+                      {:destination destination})))
+    ;; Validate every effective batch option before constructing any worker.
+    ;; Merely checking the config's shape would let a bad later destination
+    ;; strand workers already created for earlier entries.
+    (try
+      (checked-batch-config config)
+      (catch :default error
+        (throw (ex-info "span pipeline has invalid batch options"
+                        {:destination destination
+                         :option (:option (ex-data error))})))))
        (->IndependentBatchSpanPipelines
         (reduce (fn [acquired [destination {:keys [exporter config]}]]
-                  (conj acquired
-                        [destination
-                         (lifecycle/acquire-child!
-                          receipt #(batch-processor exporter config %))]))
+                  (let [factory batch-processor]
+                    (conj acquired
+                          [destination
+                           (lifecycle/acquire-child!
+                            receipt (fn [child]
+                                      (enter-pipeline-factory! receipt destinations
+                                                               exporter factory)
+                                      (factory exporter config child)))])))
                 [] destinations)
         (lifecycle/terminal-action)))))
 

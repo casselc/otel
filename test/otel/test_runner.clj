@@ -23,6 +23,7 @@
     otel.sdk.clock-test
     otel.sdk.construction-rollback-test
     otel.sdk.construction-face-transfer-test
+    otel.sdk.pipeline-construction-face-test
     otel.sdk.worker-constructor-rollback-test
     otel.sdk.init-publication-rollback-test
     otel.sdk.init-failure-receipt-test
