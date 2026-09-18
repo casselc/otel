@@ -278,6 +278,58 @@
             :terminal (terminal-action)}))
   owner))
 
+(defn account-construction-faces!
+  "Trusted maintained root ledger, installed before fallible acquisition.
+  Entries describe exact supplied resources/signals, never arbitrary absence."
+  [receipt faces]
+  (locking (:lock receipt)
+    (when-not (and (= :acquiring (:phase @(:state receipt)))
+                   (not (contains? @(:state receipt) :root-faces)))
+      (throw (ex-info "root face ledger was not acquiring"
+                      {:otel.sdk/error :invalid-construction-receipt})))
+    (swap! (:state receipt) assoc :root-faces
+           (mapv #(assoc % :ownership :unacquired) faces))))
+
+(defn mark-construction-face!
+  "Update an explicitly accounted exact face under the acquisition seal."
+  [receipt resource signal ownership]
+  (locking (:lock receipt)
+    (when-not (and (= :acquiring (:phase @(:state receipt)))
+                   (contains? #{:unknown :foreign-unknown :sdk-owned} ownership))
+      (throw (ex-info "root face transfer was not acquiring"
+                      {:otel.sdk/error :invalid-construction-receipt})))
+    (swap! (:state receipt) update :root-faces
+           (fn [faces]
+             (mapv (fn [face]
+                     (if (and (identical? resource (:resource face))
+                              (= signal (:signal face)))
+                       (cond
+                         (= :foreign-unknown ownership)
+                         (assoc face :ownership :unknown :foreign? true)
+                         (:foreign? face) face
+                         :else (assoc face :ownership ownership))
+                       face)) faces)))))
+
+(defn construction-face-status
+  "Closed root transfer observation for an exact failed invocation and face.
+  Unacquired permission requires explicit accounting AND full root settlement;
+  foreign acquisition barriers cannot become no-claim orphan permission."
+  [receipt error resource signal]
+  (let [failure (construction-failure-status receipt error)
+        snapshot (when (instance? ConstructionReceipt receipt) @(:state receipt))
+        face (when (and (some? resource) (contains? #{:spans :metrics :logs} signal))
+               (some #(when (and (identical? resource (:resource %))
+                                 (= signal (:signal %))) %) (:root-faces snapshot)))
+        ownership (if (= :failed (:outcome failure))
+                    (case (:ownership face)
+                      :sdk-owned :sdk-owned
+                      :unacquired (if (= :confirmed (:quiescence failure))
+                                    :unacquired :unknown)
+                      :unknown)
+                    :unknown)]
+    {:otel.sdk.construction/version 1 :ownership ownership
+     :quiescence (if (= :unknown ownership) :unconfirmed (:quiescence failure))}))
+
 (defn construction-resource-status
   "Closed transfer classification for an exact built-in invocation/resource.
   Claims are a trusted constructor contract, not hostile-forgery protection."

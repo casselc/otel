@@ -150,6 +150,18 @@
     :otlp (otlp/log-exporter opts)
     (when (satisfies? sdk-logs/LogRecordExporter exporter) exporter)))
 
+(def ^:private maintained-exporter-factories
+  {:spans build-span-exporter :metrics build-metric-exporter :logs build-log-exporter})
+
+(defn- enter-exporter-factory!
+  [receipt exporter signal factory]
+  ;; A foreign factory receives a multi-protocol object and may use any face,
+  ;; even if it returns successfully. Built-in factories only select this face.
+  (let [maintained? (identical? factory (get maintained-exporter-factories signal))]
+    (doseq [face (if maintained? [signal] [:spans :metrics :logs])]
+      (lifecycle/mark-construction-face! receipt exporter face
+                                         (if maintained? :unknown :foreign-unknown)))))
+
 (defn- acquire-signal!
   "Register the raw face before explicit constructor handoff. Never wrap payloads."
   [receipt exporter signal release! construct]
@@ -176,6 +188,7 @@
                    ;; or independently release the original raw exporter face.
                    (lifecycle/retire-construction! child)))]
     (lifecycle/acquire-owner! receipt face close!)
+    (lifecycle/mark-construction-face! receipt exporter signal :sdk-owned)
     (reset! ownership :unknown)
     (try
       (let [owner (construct child)]
@@ -355,6 +368,21 @@
        (fn []
          (check-exporter exporter)
          (check-span-processors span-processors)
+         ;; Account only exact caller-supplied faces. Unknown/keyword factories
+         ;; cannot manufacture a queryable input resource identity.
+         (lifecycle/account-construction-faces! receipt
+           (cond-> []
+             (satisfies? export/SpanExporter exporter)
+             (conj {:resource exporter :signal :spans})
+             (satisfies? export/MetricExporter exporter)
+             (conj {:resource exporter :signal :metrics})
+             (satisfies? sdk-logs/LogRecordExporter exporter)
+             (conj {:resource exporter :signal :logs})))
+         ;; Supplied processors can retain a multi-protocol object, not merely
+         ;; its span face. No skipped factory establishes negative ownership.
+         (when (some? span-processors)
+           (doseq [signal [:spans :metrics :logs]]
+             (lifecycle/mark-construction-face! receipt exporter signal :unknown)))
          (if (disabled?)
            {:disabled? true :terminal (lifecycle/terminal-action)}
            (let [base (res/merge-resources
@@ -362,9 +390,11 @@
                         (cond-> (or resource res/empty-resource)
                           service-name (res/merge-resources
                                          (res/resource {:service.name service-name}))))
+                 span-factory build-span-exporter
                  span-exporter (when-not (some? span-processors)
+                                 (enter-exporter-factory! receipt exporter :spans span-factory)
                                  (construct-return! receipt
-                                   #(build-span-exporter exporter
+                                   #(span-factory exporter
                                       (select-keys opts [:endpoint :headers :traces-url :timeout-ms]))))
                  processors (if (some? span-processors)
                               (mapv #(lifecycle/acquire-owner! receipt % (fn [] (export/shutdown! %)))
@@ -389,18 +419,22 @@
                         (construct-return! receipt
                           #(sdk-metrics/meter-provider
                              {:resource base :temporality (:temporality opts)})) :metrics))
+                 metric-factory build-metric-exporter
                  metric-exporter (when mp
+                                   (enter-exporter-factory! receipt exporter :metrics metric-factory)
                                    (construct-return! receipt
-                                     #(build-metric-exporter exporter
+                                     #(metric-factory exporter
                                         (select-keys opts [:endpoint :headers :metrics-url :timeout-ms]))))
                  reader (when metric-exporter
                           (acquire-signal! receipt metric-exporter :metrics
                             #(export/shutdown-metric-exporter! metric-exporter)
                             #(sdk-metrics/periodic-reader mp metric-exporter
                                {:interval-ms (or metric-interval-ms 60000)} %)))
+                 log-factory build-log-exporter
                  log-exporter (when logs?
+                                (enter-exporter-factory! receipt exporter :logs log-factory)
                                 (construct-return! receipt
-                                  #(build-log-exporter exporter
+                                  #(log-factory exporter
                                      (select-keys opts [:endpoint :headers :logs-url :timeout-ms]))))
                  log-processor (when log-exporter
                                  (acquire-signal! receipt log-exporter :logs
@@ -433,6 +467,13 @@
               :logging-installation logging-installation
               :global-installation publication
               :propagator propagation/default-propagator})))))))
+
+(defn construction-face-status
+  "Observe root startup transfer for an exact reported failure/exporter/signal.
+  :sdk-owned must not be independently released; :unacquired requires explicit
+  accounting and full rollback proof; all other evidence stays :unknown."
+  [receipt error exporter signal]
+  (lifecycle/construction-face-status receipt error exporter signal))
 
 (defn force-flush!
   "Push everything buffered to the exporters now."
