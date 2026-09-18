@@ -418,14 +418,15 @@
             false
             close-value))))))
 
-(defn periodic-reader
+(defn- periodic-reader-owned
   "Collect every instrument on an interval and hand the result to `exporter`.
 
   Options: :interval-ms (default 60000). Metric collection is a poll, not a
   stream, so this interval is the resolution of every series the provider
   produces — including the runtime instruments, whose callbacks only run here."
-  ([provider exporter] (periodic-reader provider exporter {}))
-  ([provider exporter opts]
+  [provider exporter opts receipt]
+  (lifecycle/with-construction! receipt
+  (fn []
    (let [config (merge default-reader-config opts)
          state (atom {:shutdown? false
                       :shutdown-cancelled? false
@@ -453,7 +454,20 @@
                         (when-not (or retired-before-collection?
                                       (:shutdown-cancelled? @state))
                           (recur))))))]
-     (.setDaemon worker true)
-     (.start worker)
-     (->PeriodicReader provider exporter config state worker
-                       (lifecycle/terminal-action)))))
+     (let [owner (->PeriodicReader provider exporter config state worker
+                                   (lifecycle/terminal-action))]
+       (lifecycle/acquire-owner! receipt owner #(export/shutdown! owner)
+                                 {:exporter exporter :signal :metrics})
+       (lifecycle/start-owned-worker! receipt owner worker))))))
+
+(defn periodic-reader
+  "Collect every instrument on an interval and hand the result to exporter.
+
+  Options: :interval-ms (default 60000). This poll interval is the resolution
+  of every series, including runtime callbacks. Optional receipt is per call."
+  ([provider exporter]
+   (periodic-reader-owned provider exporter {} (lifecycle/construction-receipt)))
+  ([provider exporter opts]
+   (periodic-reader-owned provider exporter opts (lifecycle/construction-receipt)))
+  ([provider exporter opts receipt]
+   (periodic-reader-owned provider exporter opts receipt)))

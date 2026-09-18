@@ -94,9 +94,13 @@
 
 (defn simple-processor
   "Export each span as it ends, synchronously."
-  [exporter]
-  (->SimpleSpanProcessor exporter (atom {:shutdown? false})
-                         (lifecycle/terminal-action)))
+  ([exporter] (simple-processor exporter (lifecycle/construction-receipt)))
+  ([exporter receipt]
+   (lifecycle/with-construction! receipt
+     #(let [owner (->SimpleSpanProcessor exporter (atom {:shutdown? false})
+                                        (lifecycle/terminal-action))]
+        (lifecycle/acquire-owner! receipt owner (fn [] (shutdown! owner))
+                                  {:exporter exporter :signal :spans})))))
 
 ;; --- batch processor --------------------------------------------------------
 
@@ -282,13 +286,14 @@
      :failed-span-count (:failed-span-count state)
      :dropped-count (:dropped state)}))
 
-(defn batch-processor
+(defn- batch-processor-owned
   "Queue ended spans and export them from a background thread.
 
   Options: :max-queue-size (2048), :max-export-batch-size (512),
   :schedule-delay-ms (5000)."
-  ([exporter] (batch-processor exporter {}))
-  ([exporter opts]
+  [exporter opts receipt]
+  (lifecycle/with-construction! receipt
+  (fn []
    (let [config (checked-batch-config opts)
          state (atom {:queue [] :dropped 0 :shutdown? false
                       :shutdown-cancelled? false
@@ -306,12 +311,23 @@
                         (drain! exporter state (:max-export-batch-size config)
                                 true))
                       (when-not (:shutdown? @state) (recur)))))]
-     ;; A daemon thread: a background exporter must never be the reason a process
-     ;; refuses to exit.
-     (.setDaemon worker true)
-     (.start worker)
-     (->BatchSpanProcessor exporter state config worker
-                           (lifecycle/terminal-action)))))
+     ;; Publish the full owner privately BEFORE the first resource user starts.
+     (let [owner (->BatchSpanProcessor exporter state config worker
+                                       (lifecycle/terminal-action))]
+       ;; Register before the replaceable start seam can start and then throw.
+       (lifecycle/acquire-owner! receipt owner #(shutdown! owner)
+                                 {:exporter exporter :signal :spans})
+       (lifecycle/start-owned-worker! receipt owner worker))))))
+
+(defn batch-processor
+  "Queue ended spans and export them from a background thread.
+
+  Options: :max-queue-size (2048), :max-export-batch-size (512),
+  :schedule-delay-ms (5000). Optional receipt belongs to one construction call."
+  ([exporter] (batch-processor-owned exporter {} (lifecycle/construction-receipt)))
+  ([exporter opts]
+   (batch-processor-owned exporter opts (lifecycle/construction-receipt)))
+  ([exporter opts receipt] (batch-processor-owned exporter opts receipt)))
 
 ;; --- composite --------------------------------------------------------------
 
@@ -390,7 +406,7 @@
   (shutdown! [this]
     (every-pipeline-ok? (shutdown-pipelines! this))))
 
-(defn independent-batch-pipelines
+(defn- independent-batch-pipelines-owned
   "Build one span processor composed of named, independently bounded batches.
 
   `destinations` is a map from a caller-owned destination name to
@@ -400,7 +416,10 @@
   and parentage without allowing a slow exporter to block another pipeline.
 
   Keep this value to obtain per-destination flush, shutdown and queue results."
-  [destinations]
+  [destinations receipt]
+  (lifecycle/with-construction!
+  receipt
+  (fn []
   (when-not (map? destinations)
     (throw (ex-info "span pipelines require a destination map" {})))
   ;; Validate the complete graph before starting the first worker, so a bad
@@ -425,11 +444,28 @@
           (throw (ex-info "span pipeline has invalid batch options"
                           {:destination destination
                            :option (:option (ex-data error))}))))))
-  (->IndependentBatchSpanPipelines
-    (mapv (fn [[destination {:keys [exporter config]}]]
-            [destination (batch-processor exporter config)])
-          destinations)
-    (lifecycle/terminal-action)))
+       (->IndependentBatchSpanPipelines
+        (reduce (fn [acquired [destination {:keys [exporter config]}]]
+                  (conj acquired
+                        [destination
+                         (lifecycle/acquire-child!
+                          receipt #(batch-processor exporter config %))]))
+                [] destinations)
+        (lifecycle/terminal-action)))))
+
+(defn independent-batch-pipelines
+  "Build one span processor composed of named, independently bounded batches.
+
+  destinations maps each caller-owned name to {:exporter exporter :config opts}.
+  Put the returned processor in one tracer provider's processors vector. Each
+  ended sampled span goes into each independently bounded queue, preserving
+  canonical identity/parentage without sharing exporter latency.
+
+  Retain this value for per-destination flush, shutdown and queue results.
+  Optional receipt belongs to one construction call."
+  ([destinations]
+   (independent-batch-pipelines-owned destinations (lifecycle/construction-receipt)))
+  ([destinations receipt] (independent-batch-pipelines-owned destinations receipt)))
 
 (defn force-flush-pipelines!
   "Flush every destination and return `{name {:ok? boolean ...}}`.

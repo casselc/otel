@@ -40,21 +40,27 @@
 ;; --- global registry --------------------------------------------------------
 
 (defonce ^:private global (atom {:tracer-provider nil :meter-provider nil :logger-provider nil}))
+;; One CAS state binds SDK registry ownership and installation lifetime. Global
+;; remains an internal watched notification view; foreign provider retirement
+;; bypassing SDK handles is not synchronized by this contract.
+(defonce ^:private registry
+  (atom {:providers {:tracer-provider nil :meter-provider nil :logger-provider nil}
+         :owners {} :active #{} :revision 0}))
 
 (defn tracer-provider
   "The installed tracer provider, or nil."
   []
-  (:tracer-provider @global))
+  (:tracer-provider (:providers @registry)))
 
 (defn meter-provider
   "The installed meter provider, or nil."
   []
-  (:meter-provider @global))
+  (:meter-provider (:providers @registry)))
 
 (defn logger-provider
   "The installed logger provider, or nil."
   []
-  (:logger-provider @global))
+  (:logger-provider (:providers @registry)))
 
 (defn tracer
   "A tracer for `scope-name` from the installed provider. Falls back to the API's
@@ -144,6 +150,171 @@
     :otlp (otlp/log-exporter opts)
     (when (satisfies? sdk-logs/LogRecordExporter exporter) exporter)))
 
+(defn- acquire-signal!
+  "Register the raw face before explicit constructor handoff. Never wrap payloads."
+  [receipt exporter signal release! construct]
+  (let [child (lifecycle/construction-receipt) ownership (atom :init-owned)
+        raw-terminal (lifecycle/terminal-action)
+        face (reify lifecycle/SettlementWitness
+               (settlement-status [_]
+                 {:quiescence
+                  (case @ownership
+                    :child-owned (:quiescence (lifecycle/construction-settlement child))
+                    (:init-owned :orphan)
+                    (if (and (contains? #{:returned-true :returned-false :threw}
+                                        (lifecycle/terminal-status raw-terminal))
+                             (or (= :returned-true (lifecycle/terminal-status raw-terminal))
+                                 (= :confirmed (:quiescence
+                                                 (lifecycle/component-settlement exporter)))))
+                      :confirmed :unconfirmed)
+                    :unconfirmed)}))
+        close! (fn []
+                 (case @ownership
+                   (:init-owned :orphan) (lifecycle/run-terminal! raw-terminal release!)
+                   :child-owned (lifecycle/retire-construction! child)
+                   ;; Retire known child records, but do not attest foreign errors
+                   ;; or independently release the original raw exporter face.
+                   (lifecycle/retire-construction! child)))]
+    (lifecycle/acquire-owner! receipt face close!)
+    (reset! ownership :unknown)
+    (try
+      (let [owner (construct child)]
+        (reset! ownership (:ownership (lifecycle/construction-resource-status child nil exporter signal)))
+        owner)
+      (catch :default error
+        (reset! ownership (:ownership (lifecycle/construction-resource-status child error exporter signal)))
+        (throw error)))))
+
+(defn- construct-return!
+  "Preinstall an unknown-acquisition barrier before a replaceable factory call.
+  A throw without returned ownership cannot become empty-resource permission."
+  [receipt construct]
+  (let [returned? (atom false)
+        observer (reify lifecycle/SettlementWitness
+                   (settlement-status [_]
+                     {:quiescence (if @returned? :confirmed :unconfirmed)}))]
+    (lifecycle/acquire-owner! receipt observer (constantly true))
+    (let [value (construct)]
+      (reset! returned? true)
+      value)))
+
+(defn- acquire-provider!
+  "Admission-only adapter for an actual maintained provider. Child receipts
+  independently gate every processor/exporter face; flags alone do not do so."
+  [receipt provider kind]
+  (let [terminal (:terminal provider)
+        state (if (= :traces kind) (:shutdown? provider) (:state provider))
+        known? (if (= :traces kind)
+                 (instance? otel.sdk.tracer.SdkTracerProvider provider)
+                 (instance? otel.sdk.metrics.SdkMeterProvider provider))
+        witness (reify lifecycle/SettlementWitness
+                  (settlement-status [_]
+                    {:quiescence
+                     (if (and known?
+                              (contains? #{:returned-true :returned-false :threw}
+                                         (lifecycle/terminal-status terminal))
+                              (if (= :traces kind) (true? @state)
+                                  (true? (:shutdown? @state))))
+                       :confirmed :unconfirmed)}))]
+    (lifecycle/acquire-owner! receipt witness
+      #(if (= :traces kind) (sdk-tracer/shutdown! provider)
+           (sdk-metrics/shutdown! provider)))
+    provider))
+
+(defn- registry-transition!
+  "Pure retry computation; capture previous receipt only after successful CAS."
+  [transition]
+  (loop []
+    (let [before @registry [after result] (transition before)]
+      (if (compare-and-set! registry before after)
+        (assoc result :snapshot after)
+        (recur)))))
+
+(defn- notify-registry!
+  "Internal versioned notification view, never authority or liveness proof.
+  No lock is held across synchronous watches, including reentrant SDK calls."
+  [snapshot]
+  (let [view (assoc (:providers snapshot) :registry-revision (:revision snapshot))]
+    (loop []
+      (let [before @global]
+        (cond
+          (>= (get before :registry-revision 0) (:revision snapshot)) nil
+          (compare-and-set! global before view) nil
+          :else (recur))))))
+
+(defn- global-installation
+  [providers]
+  (let [id (Object.) state (atom {}) terminal (lifecycle/terminal-action)
+        witness (reify lifecycle/SettlementWitness
+                  (settlement-status [_]
+                    {:quiescence
+                     (if (and (:retired? @state)
+                              (not (contains? (:active @registry) id))
+                              (contains? #{:returned-true :returned-false :threw}
+                                         (lifecycle/terminal-status terminal)))
+                       :confirmed :unconfirmed)}))
+        retire! (fn [restore-previous?]
+                  (lifecycle/run-terminal! terminal
+                    (fn []
+                      (let [{:keys [previous previous-owners]} @state
+                            result
+                            (registry-transition!
+                              (fn [before]
+                                (let [active (disj (:active before) id)
+                                      restored
+                                      (reduce-kv
+                                        (fn [snapshot key installed]
+                                          (if (and (identical? id (get (:owners before) key))
+                                                   (identical? installed (get (:providers before) key)))
+                                            (let [prior-id (get previous-owners key)
+                                                  restore? (and restore-previous? (some? prior-id)
+                                                                (contains? active prior-id))]
+                                              (-> snapshot
+                                                  (assoc-in [:providers key] (if restore? (get previous key) nil))
+                                                  (assoc-in [:owners key] (when restore? prior-id))))
+                                            snapshot))
+                                        before providers)]
+                                  [(assoc restored :active active :revision (inc (:revision before))) {}])))]
+                        ;; Record committed lifetime retirement BEFORE watch
+                        ;; dispatch; a notification throw is not an active owner.
+                        (swap! state assoc :retired? true)
+                        (notify-registry! (:snapshot result))
+                        true))))]
+    {:owner witness
+     :retire! #(retire! true)
+     :clear! #(retire! false)
+     :install!
+     (fn []
+       (let [result
+             (registry-transition!
+               (fn [before]
+                 [(-> before
+                      (assoc :providers (merge (:providers before) providers))
+                      (assoc :owners (reduce-kv (fn [owners key _] (assoc owners key id))
+                                                (:owners before) providers))
+                      (update :active conj id)
+                      (update :revision inc))
+                  {:previous (:providers before) :previous-owners (:owners before)}]))]
+         (reset! state {:previous (:previous result) :previous-owners (:previous-owners result)
+                        :published? true})
+         (notify-registry! (:snapshot result))))}))
+
+(defn- clear-legacy-publication!
+  "No lifetime evidence: clear only this handle's exact still-current fields."
+  [handle]
+  (let [result
+        (registry-transition!
+          (fn [before]
+            [(reduce (fn [snapshot key]
+                       (if (and (some? (get handle key))
+                                (identical? (get handle key) (get (:providers before) key)))
+                         (-> snapshot (assoc-in [:providers key] nil) (assoc-in [:owners key] nil))
+                         snapshot))
+                     (update before :revision inc)
+                     [:tracer-provider :meter-provider :logger-provider]) {}]))]
+    (notify-registry! (:snapshot result))
+    true))
+
 (defn init!
   "Configure and install a tracing (and, unless disabled, metrics) SDK.
 
@@ -168,74 +339,100 @@
     :logs?            emit the logs signal (default false)
     :bridge-logging?  route clojure.tools.logging through it (default true when
                       :logs? is on) -- additive, the existing backend keeps working
+    :construction-receipt caller-created per-invocation receipt for matching
+                      failure settlement evidence; never reuse it
 
   Returns a handle for `shutdown!`. Honours OTEL_SDK_DISABLED=true by installing
   nothing, which is how the spec says to turn telemetry off without code changes."
   ([] (init! {}))
-  ([{:keys [service-name resource sampler exporter endpoint headers processor span-processors
+  ([{:keys [service-name resource sampler exporter processor span-processors
             metrics? runtime-metrics? metric-interval-ms logs? bridge-logging?]
      :or {exporter :otlp processor :batch metrics? true runtime-metrics? true
           logs? false bridge-logging? true}
      :as opts}]
-   (check-exporter exporter)
-   (check-span-processors span-processors)
-   (if (disabled?)
-     {:disabled? true :terminal (lifecycle/terminal-action)}
-     (let [base (res/merge-resources
-                  (res/default-resource)
-                  (cond-> (or resource res/empty-resource)
-                    service-name (res/merge-resources (res/resource {:service.name service-name}))))
-           span-exporter (when-not (some? span-processors)
-                           (build-span-exporter exporter
-                                                (select-keys opts [:endpoint :headers :traces-url :timeout-ms])))
-           processors (if (some? span-processors)
-                        (vec span-processors)
-                        (if span-exporter
-                          [(if (= :simple processor)
-                             (export/simple-processor span-exporter)
-                             (export/batch-processor span-exporter
-                                                     (select-keys opts [:schedule-delay-ms
-                                                                        :max-queue-size
-                                                                        :max-export-batch-size])))]
-                          []))
-           tp (sdk-tracer/tracer-provider {:resource base
-                                           :sampler (or sampler (env-sampler) sampler/default-sampler)
-                                           :processors processors
-                                           :limits (:limits opts)})
-           mp (when metrics?
-                (sdk-metrics/meter-provider {:resource base
-                                             :temporality (:temporality opts)}))
-           metric-exporter (when mp (build-metric-exporter exporter
-                                                           (select-keys opts [:endpoint :headers :metrics-url :timeout-ms])))
-           reader (when metric-exporter
-                    (sdk-metrics/periodic-reader mp metric-exporter
-                                                 {:interval-ms (or metric-interval-ms 60000)}))
-           log-exporter (when logs?
-                          (build-log-exporter exporter
-                                              (select-keys opts [:endpoint :headers :logs-url :timeout-ms])))
-           lp (when log-exporter
-                (sdk-logs/logger-provider
-                  {:resource base
-                   :processors [(if (= :simple processor)
-                                  (sdk-logs/simple-processor log-exporter)
-                                  (sdk-logs/batch-processor log-exporter {}))]}))
-           ;; Off by default: installing it rewires the application's logging, which
-           ;; is too big a side effect to take without being asked.
-           previous-factory (when (and lp bridge-logging?) (tools-logging/install! lp))]
-       (when (and mp runtime-metrics?)
-         (runtime/register! (sdk-metrics/get-meter mp {:name "otel.instrument.runtime"
-                                                       :version res/sdk-version})))
-       (swap! global assoc :tracer-provider tp :meter-provider mp :logger-provider lp)
-       {:tracer-provider tp
-        :meter-provider mp
-        :logger-provider lp
-        :reader reader
-        :shutdown-components (cond-> (vec processors)
-                               reader (conj reader)
-                               lp (conj lp))
-        :terminal (lifecycle/terminal-action)
-        :previous-logger-factory previous-factory
-        :propagator propagation/default-propagator}))))
+   (let [receipt (or (:construction-receipt opts) (lifecycle/construction-receipt))]
+     (lifecycle/with-construction! receipt
+       (fn []
+         (check-exporter exporter)
+         (check-span-processors span-processors)
+         (if (disabled?)
+           {:disabled? true :terminal (lifecycle/terminal-action)}
+           (let [base (res/merge-resources
+                        (res/default-resource)
+                        (cond-> (or resource res/empty-resource)
+                          service-name (res/merge-resources
+                                         (res/resource {:service.name service-name}))))
+                 span-exporter (when-not (some? span-processors)
+                                 (construct-return! receipt
+                                   #(build-span-exporter exporter
+                                      (select-keys opts [:endpoint :headers :traces-url :timeout-ms]))))
+                 processors (if (some? span-processors)
+                              (mapv #(lifecycle/acquire-owner! receipt % (fn [] (export/shutdown! %)))
+                                    span-processors)
+                              (if span-exporter
+                                [(acquire-signal! receipt span-exporter :spans
+                                   #(export/shutdown-exporter! span-exporter)
+                                   (fn [child]
+                                     (if (= :simple processor)
+                                       (export/simple-processor span-exporter child)
+                                       (export/batch-processor span-exporter
+                                         (select-keys opts [:schedule-delay-ms :max-queue-size
+                                                            :max-export-batch-size]) child))))]
+                                []))
+                 tp (acquire-provider! receipt
+                      (construct-return! receipt
+                        #(sdk-tracer/tracer-provider
+                           {:resource base :sampler (or sampler (env-sampler) sampler/default-sampler)
+                            :processors processors :limits (:limits opts)})) :traces)
+                 mp (when metrics?
+                      (acquire-provider! receipt
+                        (construct-return! receipt
+                          #(sdk-metrics/meter-provider
+                             {:resource base :temporality (:temporality opts)})) :metrics))
+                 metric-exporter (when mp
+                                   (construct-return! receipt
+                                     #(build-metric-exporter exporter
+                                        (select-keys opts [:endpoint :headers :metrics-url :timeout-ms]))))
+                 reader (when metric-exporter
+                          (acquire-signal! receipt metric-exporter :metrics
+                            #(export/shutdown-metric-exporter! metric-exporter)
+                            #(sdk-metrics/periodic-reader mp metric-exporter
+                               {:interval-ms (or metric-interval-ms 60000)} %)))
+                 log-exporter (when logs?
+                                (construct-return! receipt
+                                  #(build-log-exporter exporter
+                                     (select-keys opts [:endpoint :headers :logs-url :timeout-ms]))))
+                 log-processor (when log-exporter
+                                 (acquire-signal! receipt log-exporter :logs
+                                   #(sdk-logs/shutdown-log-exporter! log-exporter)
+                                   #(if (= :simple processor)
+                                      (sdk-logs/simple-processor log-exporter %)
+                                      (sdk-logs/batch-processor log-exporter {} %))))
+                 lp (when log-processor
+                      (let [provider (construct-return! receipt
+                                       #(sdk-logs/logger-provider
+                                          {:resource base :processors [log-processor]}))]
+                        (lifecycle/acquire-owner! receipt provider #(sdk-logs/shutdown! provider))))
+                 logging-installation (when (and lp bridge-logging?)
+                                        (let [token (tools-logging/installation lp)]
+                                          (lifecycle/acquire-owner! receipt token
+                                            #(tools-logging/retire-installation! token))))
+                 previous-factory (when logging-installation
+                                    (tools-logging/install-owned! logging-installation))
+                 publication (global-installation
+                               {:tracer-provider tp :meter-provider mp :logger-provider lp})]
+             (lifecycle/acquire-owner! receipt (:owner publication) (:retire! publication))
+             (when (and mp runtime-metrics?)
+               (runtime/register! (sdk-metrics/get-meter mp
+                                    {:name "otel.instrument.runtime" :version res/sdk-version})))
+             ((:install! publication))
+             {:tracer-provider tp :meter-provider mp :logger-provider lp :reader reader
+              :shutdown-components (cond-> (vec processors) reader (conj reader) lp (conj lp))
+              :terminal (lifecycle/terminal-action)
+              :previous-logger-factory previous-factory
+              :logging-installation logging-installation
+              :global-installation publication
+              :propagator propagation/default-propagator})))))))
 
 (defn force-flush!
   "Push everything buffered to the exporters now."
@@ -273,19 +470,19 @@
            :otel.sdk.shutdown-status/version 1)))
 
 (defn shutdown!
-  "Flush and stop everything `init!` started, and clear the global registry.
-
-  Call this before the process exits: a batch processor holds spans that have not
-  been sent yet, and they are lost if the process just ends."
+  "Retire this SDK's publication, then stop every owned resource.
+  Notification failures cannot skip resource callbacks. Foreign provider
+  retirement outside the SDK handle does not participate in lifetime tracking."
   [handle]
   (let [action
         (fn []
-          ;; The logging bridge is removed first: once the logger provider is
-          ;; shut down, a bridged log call would emit into a dead provider.
-          (let [actions (cond-> []
-                          (:previous-logger-factory handle)
-                          (conj #(tools-logging/uninstall!
-                                   (:previous-logger-factory handle)))
+          (let [actions (cond-> [#(if-let [publication (:global-installation handle)]
+                                   ((:clear! publication))
+                                   (clear-legacy-publication! handle))]
+                          (:logging-installation handle)
+                          (conj #(tools-logging/retire-installation! (:logging-installation handle)))
+                          (and (nil? (:logging-installation handle)) (:previous-logger-factory handle))
+                          (conj #(tools-logging/uninstall! (:previous-logger-factory handle)))
                           (:reader handle)
                           (conj #(export/shutdown! (:reader handle)))
                           (:logger-provider handle)
@@ -294,16 +491,12 @@
                           (conj #(sdk-metrics/shutdown! (:meter-provider handle)))
                           (:tracer-provider handle)
                           (conj #(sdk-tracer/shutdown! (:tracer-provider handle))))]
-            (try
-              (lifecycle/run-all! actions)
-              (finally
-                (reset! global {:tracer-provider nil
-                                :meter-provider nil
-                                :logger-provider nil})))))]
+            ;; run-all! preserves its first Throwable and still executes EVERY
+            ;; action. No registry CAS/lock spans any callback or worker join.
+            (lifecycle/run-all! actions)))]
     (if-let [terminal (:terminal handle)]
       (lifecycle/run-terminal! terminal action)
       (if (component-handle? handle)
         (throw (ex-info "SDK shutdown requires the lifecycle handle returned by init!"
-                        {:otel.sdk/error :invalid-shutdown-handle
-                         :missing :terminal}))
+                        {:otel.sdk/error :invalid-shutdown-handle :missing :terminal}))
         true))))

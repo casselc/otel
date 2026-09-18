@@ -84,9 +84,13 @@
 
 (defn simple-processor
   "Export each record as it is emitted, synchronously."
-  [exporter]
-  (->SimpleLogProcessor exporter (atom {:shutdown? false})
-                        (lifecycle/terminal-action)))
+  ([exporter] (simple-processor exporter (lifecycle/construction-receipt)))
+  ([exporter receipt]
+   (lifecycle/with-construction! receipt
+     #(let [owner (->SimpleLogProcessor exporter (atom {:shutdown? false})
+                                       (lifecycle/terminal-action))]
+        (lifecycle/acquire-owner! receipt owner (fn [] (export/shutdown! owner))
+                                  {:exporter exporter :signal :logs})))))
 
 (def default-batch-config
   {:max-queue-size 2048
@@ -150,10 +154,11 @@
 
 (defn dropped-count [processor] (:dropped @(:state processor)))
 
-(defn batch-processor
+(defn- batch-processor-owned
   "Queue emitted records and export them from a background thread."
-  ([exporter] (batch-processor exporter {}))
-  ([exporter opts]
+  [exporter opts receipt]
+  (lifecycle/with-construction! receipt
+  (fn []
    (let [config (merge default-batch-config opts)
          state (atom {:queue [] :dropped 0 :shutdown? false
                       :shutdown-cancelled? false
@@ -171,10 +176,19 @@
                         (drain! exporter state (:max-export-batch-size config)
                                 true))
                       (when-not (:shutdown? @state) (recur)))))]
-     (.setDaemon worker true)
-     (.start worker)
-     (->BatchLogProcessor exporter state config worker
-                          (lifecycle/terminal-action)))))
+     (let [owner (->BatchLogProcessor exporter state config worker
+                                      (lifecycle/terminal-action))]
+       (lifecycle/acquire-owner! receipt owner #(export/shutdown! owner)
+                                 {:exporter exporter :signal :logs})
+       (lifecycle/start-owned-worker! receipt owner worker))))))
+
+(defn batch-processor
+  "Queue emitted records and export them from a background thread.
+  Optional receipt belongs to exactly one constructor invocation."
+  ([exporter] (batch-processor-owned exporter {} (lifecycle/construction-receipt)))
+  ([exporter opts]
+   (batch-processor-owned exporter opts (lifecycle/construction-receipt)))
+  ([exporter opts receipt] (batch-processor-owned exporter opts receipt)))
 
 ;; --- logger and provider ----------------------------------------------------
 

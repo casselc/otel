@@ -124,6 +124,46 @@ The executable [shutdown ownership model](formal/quint/shutdown-lifecycle.md)
 documents the shared worker/exporter state machine, its abstraction boundary,
 and the causal mutation controls used to keep this ordering check meaningful.
 
+### Failed SDK startup
+
+`init!` records each acquired worker and exporter face before starting it. If
+startup fails, it stops those owners before rethrowing the original error. If
+cleanup cannot yet be confirmed, it instead throws a safe exception containing
+`:otel.sdk/error :construction-cleanup-incomplete` and a `:retry-stop!` function.
+Keep dependent storage open until that function returns `:status :closed`.
+Retries refresh ownership proof; they do not repeat release callbacks.
+
+A caller that also owns storage can install a receipt **before** initialization:
+
+```clojure
+(require '[otel.sdk.lifecycle :as lifecycle])
+(def receipt (lifecycle/construction-receipt))
+(def startup
+  (try
+    {:handle (sdk/init! {:exporter :none :construction-receipt receipt})}
+    (catch Throwable error
+      ;; Keep the error for retry-stop! when cleanup is incomplete.
+      ;; Only :confirmed permits releasing dependent storage. A missing receipt,
+      ;; another error, a reused receipt or an outside wrapper throw is unknown.
+      {:error error
+       :failure-status (lifecycle/construction-failure-status receipt error)})))
+;; On success, retain (:handle startup) and eventually call sdk/shutdown! on it.
+```
+
+Custom settlement witnesses are a trusted contract: they must be truthful,
+permanently stable after retirement, bounded and nonblocking. This is ownership
+proof, not delivery or native-persistence proof. After a worker timeout, retries
+do not promise a later SDK exporter release; an exporter can independently
+retire after the actual worker exits and supply its truthful stable witness.
+Unknown or unreturned factory owners remain fail-closed.
+
+SDK registry publication and handle retirement share one ownership/lifetime
+state, so rollback cannot reinstall an SDK already retired through its handle.
+Directly retiring a provider without its SDK handle bypasses that coordination.
+Constructor tests cover acquisition and publication seams separately from the
+shutdown model: modeling only returned handles missed partially acquired owners
+and synchronous publication callbacks.
+
 Attribute values keep their OpenTelemetry types, including nested maps and
 arrays, byte strings and an explicit present-empty value. Invalid values are
 dropped without escaping into the instrumented application. See
