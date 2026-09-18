@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Expose closed, per-signal startup face transfer observations tied to the exact
+  construction receipt, reported error and exporter identity. Explicit untouched
+  faces require confirmed rollback; SDK-owned faces must not be independently
+  released. Unreturned factories and unaccounted custom processors stay unknown.
+  Preserve exporter values, callback caching and child receipt semantics. Add
+  maintained causal ownership/count and fresh-proof controls (Refs #43).
+
 - Roll back SDK startup using incrementally acquired worker and exporter-face
   ownership, preserving exporter identity and the original error when cleanup
   is confirmed. Expose an optional per-invocation construction receipt and an

@@ -150,6 +150,16 @@ A caller that also owns storage can install a receipt **before** initialization:
 ;; On success, retain (:handle startup) and eventually call sdk/shutdown! on it.
 ```
 
+For a matching startup failure, `sdk/construction-face-status` accepts the
+receipt, exact reported error, original exporter and signal (`:spans`, `:metrics`
+or `:logs`). `:sdk-owned` means the SDK controls release: never release that face
+again yourself. `:unacquired` requires explicit accounting and confirmed rollback;
+it allows the caller to take cleanup ownership after other users are settled.
+`:unknown` grants no cleanup permission. Supplied processors, missing evidence
+and unreturned factories cannot become orphan ownership merely from absent claims.
+The returned `:quiescence` is separate from transfer and freshly observes
+constructor-owned users, not the untouched exporter's own independent users.
+
 Custom settlement witnesses are a trusted contract: they must be truthful,
 permanently stable after retirement, bounded and nonblocking. This is ownership
 proof, not delivery or native-persistence proof. After a worker timeout, retries
