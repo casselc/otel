@@ -53,6 +53,9 @@ jobs:
       settlement: ${{ steps.decision.outputs.settlement }}
       reason: ${{ steps.decision.outputs.reason }}
       changed_count: ${{ steps.decision.outputs.changed_count }}
+      # All downstream model executions must use this exact Git commit, rather
+      # than GitHub's pull_request synthetic merge revision.
+      revision: ${{ steps.decision.outputs.revision }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -119,8 +122,10 @@ jobs:
           done
           test "$(grep -c '^reason=' "$decision_file" || true)" = 1
           test "$(grep -c '^changed_count=' "$decision_file" || true)" = 1
+          test "$HEAD_SHA" = "$(git rev-parse HEAD)"
           cat "$decision_file"
           cat "$decision_file" >> "$GITHUB_OUTPUT"
+          printf 'revision=%s\n' "$HEAD_SHA" >> "$GITHUB_OUTPUT"
       - name: Record immutable classification receipt
         env:
           LIFECYCLE: ${{ steps.decision.outputs.lifecycle }}
@@ -152,6 +157,9 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          ref: ${{ needs.classify-model-inputs.outputs.revision }}
+      - name: Assert classified revision checkout
+        run: test "$(git rev-parse HEAD)" = "${{ needs.classify-model-inputs.outputs.revision }}"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
@@ -187,6 +195,9 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          ref: ${{ needs.classify-model-inputs.outputs.revision }}
+      - name: Assert classified revision checkout
+        run: test "$(git rev-parse HEAD)" = "${{ needs.classify-model-inputs.outputs.revision }}"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
@@ -222,6 +233,9 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          ref: ${{ needs.classify-model-inputs.outputs.revision }}
+      - name: Assert classified revision checkout
+        run: test "$(git rev-parse HEAD)" = "${{ needs.classify-model-inputs.outputs.revision }}"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22

@@ -22,6 +22,7 @@ check() {
 
 python3 - "$repo_root" <<'PY'
 import pathlib
+import re
 import sys
 
 root = pathlib.Path(sys.argv[1])
@@ -57,6 +58,28 @@ def has_manual_force_both(source):
 assert has_manual_force_both(workflow), "manual force-both no longer selects both"
 assert not has_manual_force_both(workflow.replace("MANUAL_FORCE_BOTH", "MANUAL_DISABLED")), \
     "manual dispatch mutation control is vacuous"
+
+# Classification compares the immutable PR head (not GitHub's synthetic merge
+# revision), so every executor must checkout and attest that same classifier
+# output. This is deliberately structural: a checkout action's default ref on
+# pull_request is the merge revision, and would silently invalidate a decision
+# calculated from the head object.
+classifier_ref = "ref: ${{ github.event.pull_request.head.sha || github.sha }}"
+executor_ref = "ref: ${{ needs.classify-model-inputs.outputs.revision }}"
+executor_attestation = 'test "$(git rev-parse HEAD)" = "${{ needs.classify-model-inputs.outputs.revision }}"'
+assert classifier_ref in workflow, "classifier does not checkout its exact input revision"
+assert "revision: ${{ steps.decision.outputs.revision }}" in workflow, "classifier does not publish execution revision"
+assert "test \"$HEAD_SHA\" = \"$(git rev-parse HEAD)\"" in workflow, "classifier does not attest checkout revision"
+assert "printf 'revision=%s\\n' \"$HEAD_SHA\" >> \"$GITHUB_OUTPUT\"" in workflow, "classifier revision output is not exact head"
+for job in ("deterministic-model-controls", "sample-lifecycle", "sample-settlement"):
+    start = workflow.index(f"  {job}:")
+    following = re.search(r"\n  [a-z][a-z0-9-]*:", workflow[start + len(job) + 4:])
+    end = len(workflow) if following is None else start + len(job) + 4 + following.start()
+    body = workflow[start:end]
+    assert executor_ref in body, f"{job} defaults to a synthetic merge checkout"
+    assert executor_attestation in body, f"{job} does not attest classified checkout"
+assert executor_ref not in workflow.replace(executor_ref, "", 3), "executor-ref count control is vacuous"
+assert executor_attestation not in workflow.replace(executor_attestation, "", 3), "executor-attestation count control is vacuous"
 print("ok static checker/fingerprint/workflow contract")
 PY
 
