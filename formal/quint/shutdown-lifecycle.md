@@ -121,18 +121,35 @@ repeated-caller, and post-shutdown-rejection traces remain green.
 
 ## Command
 
-The fast gate tangles this document, typechecks both generated files, runs the
-deterministic corrected and mutation scenarios, and samples the corrected
-invariants and reachability witnesses:
+The deterministic control gate tangles this document, typechecks all four
+generated files, and runs the corrected and mutation scenarios:
 
 ```sh
-scripts/check-shutdown-lifecycle-quint.sh
+scripts/check-shutdown-lifecycle-quint.sh --deterministic
 ```
+
+The two 10,000-sample campaigns are intentionally independent. Each tangles
+this document and typechecks its own generated closure before sampling, but
+does not rerun unrelated mutation controls:
+
+```sh
+scripts/check-shutdown-lifecycle-quint.sh --sample lifecycle
+scripts/check-shutdown-lifecycle-quint.sh --sample settlement
+```
+
+`--all` is the local convenience command for the deterministic controls
+followed by both samples. CI first records an exact base/head classifier
+receipt, always runs deterministic controls, and selects each sample only when
+its effective tangled closure or a conservative runtime-correspondence input
+changed. Missing revisions, extractor failures, checker/workflow changes, and
+manual `force_both` dispatches select both campaigns. Prose-only changes to
+this document can skip both only when exact-revision extraction proves both
+generated closures and shared pinned inputs byte-identical.
 
 It requires Quint 0.32.0 and `lmt` at commit
 `62fe18f2f6a6e11c158ff2b2209e1082a4fcd59c`. Simulation is sampled evidence,
-not exhaustive proof. The dedicated CI workflow is path-filtered to lifecycle
-model, implementation, and runtime-test artifacts.
+not exhaustive proof. The dedicated CI workflow is path-filtered to the model,
+checker, classifier, implementation, and runtime-test correspondence closure.
 
 ## Executable model
 

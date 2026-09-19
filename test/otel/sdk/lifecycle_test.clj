@@ -893,6 +893,10 @@
     (every? #(str/includes? workflow (str "      - " %))
             ["formal/quint/shutdown-lifecycle.md"
              "scripts/check-shutdown-lifecycle-quint.sh"
+             "scripts/classify-shutdown-lifecycle-quint-paths.sh"
+             "scripts/fingerprint-shutdown-lifecycle-quint-inputs.sh"
+             "test/shutdown-lifecycle-model-path-classifier.sh"
+             "src/otel/sdk.clj"
              "src/otel/sdk/lifecycle.clj"
              "src/otel/sdk/export.clj"
              "src/otel/sdk/logs.clj"
@@ -900,8 +904,23 @@
              "test/otel/sdk/lifecycle_events.clj"
              "test/otel/sdk/lifecycle_test.clj"])
     (not (str/includes? workflow "      - src/**"))
-    (str/includes? workflow
-                   "run: scripts/check-shutdown-lifecycle-quint.sh")
+    (every? #(str/includes? workflow %)
+            ["scripts/check-shutdown-lifecycle-quint.sh --deterministic"
+             "scripts/check-shutdown-lifecycle-quint.sh --sample lifecycle"
+             "scripts/check-shutdown-lifecycle-quint.sh --sample settlement"
+             "force_both:"
+             "MANUAL_FORCE_BOTH"
+             "manual-force-both"
+             "shutdown-model-classification.receipt"
+             "classify-model-inputs"
+             "deterministic-model-controls"
+             "sample-lifecycle"
+             "sample-settlement"
+             "revision: ${{ steps.decision.outputs.revision }}"
+             "ref: ${{ github.event.pull_request.head.sha || github.sha }}"
+             "ref: ${{ needs.classify-model-inputs.outputs.revision }}"
+             "test \"$HEAD_SHA\" = \"$(git rev-parse HEAD)\""
+             "test \"$(git rev-parse HEAD)\" = \"${{ needs.classify-model-inputs.outputs.revision }}\""])
     (str/includes? workflow "@informalsystems/quint@0.32.0")
     (str/includes? workflow
                    "github.com/driusan/lmt@62fe18f2f6a6e11c158ff2b2209e1082a4fcd59c")

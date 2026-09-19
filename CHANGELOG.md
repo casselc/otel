@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Split the literate shutdown Quint gate into deterministic typecheck/mutation
+  controls and independently selected lifecycle and settlement 10,000-sample
+  campaigns. Record exact-revision classifier receipts and compare each
+  campaign's tangled closure plus pinned shared inputs before skipping it;
+  missing provenance, correspondence changes, and manual force-both dispatches
+  remain fail-closed. Sampling remains bounded evidence, not delivery or
+  native-persistence proof (Refs #42).
+
 - Account exact span-exporter faces during independent pipeline construction so
   failed partial startup distinguishes acquired destinations from explicitly
   untouched ones. Require confirmed rollback before transferring untouched
