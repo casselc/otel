@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Admit synchronous-gauge and asynchronous-observer measurements only when
+  they have a valid OTLP NumberDataPoint representation: signed Int64 integers
+  or finite double-wire values. Reject invalid inputs before attribute
+  normalization or cell mutation, while preserving fluent calls and callback
+  containment. Aggregate-overflow policy remains outside this admission slice
+  (Refs #3).
+
 - Split the literate shutdown Quint gate into deterministic typecheck/mutation
   controls and independently selected lifecycle and settlement 10,000-sample
   campaigns. Record exact-revision classifier receipts and compare each

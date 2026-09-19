@@ -275,6 +275,41 @@
       (is (= {:resource resource/empty-resource :collected collected}
              (first (get-in result [:decoded :collections])))))))
 
+(deftest admitted-number-data-point-gauges-survive-real-json-round-trip
+  (let [provider (sdk-metrics/meter-provider
+                  {:resource resource/empty-resource
+                   :clock (clock/fake-clock {:wall 1000 :mono 0})})
+        meter (sdk-metrics/get-meter provider {:name "number-data-point-wire"})
+        values [any/min-int64 any/max-int64 9007199254740993 4.9e-324]
+        gauge (metrics/gauge meter "sync")
+        async (metrics/observable-gauge
+               meter "async"
+               (fn [observer]
+                 (doseq [[i v] (map-indexed vector values)]
+                   (metrics/observe! observer v {:series i}))))]
+    (doseq [[i v] (map-indexed vector values)]
+      (metrics/set-value! gauge v {:series i}))
+    (let [collected (vec (sdk-metrics/collect! provider))
+          request (encode/metrics-request resource/empty-resource collected)
+          encoded (json/write-str request)
+          decoded (decode/decode-metrics (data-json/read-str encoded :key-fn keyword))
+          direct {:resource resource/empty-resource :collected collected}
+          metrics (get-in request [:resourceMetrics 0 :scopeMetrics 0 :metrics])
+          points (mapcat #(get-in % [:gauge :dataPoints]) metrics)]
+      ;; This must exercise the maintained JSON writer/parser path, including
+      ;; both NumberDataPoint wire arms, not an encoder-object shortcut.
+      (is (string? encoded))
+      (is (= 8 (count points)))
+      (is (= 6 (count (filter #(contains? % :asInt) points))))
+      (is (= 2 (count (filter #(contains? % :asDouble) points))))
+      (is (= #{(str any/min-int64) (str any/max-int64) "9007199254740993"}
+             (set (map :asInt (filter #(contains? % :asInt) points)))))
+      (is (every? #(== 4.9e-324 (:asDouble %))
+                  (filter #(contains? % :asDouble) points)))
+      (is (zero? (:rejected-data-points decoded)))
+      (is (empty? (:errors decoded)))
+      (is (= direct (first (:collections decoded)))))))
+
 (deftest malformed-histogram-boundaries-reject-only-the-owning-point
   (doseq [bounds [[1 1] [2 1] [0.0 -0.0]
                   [9007199254740992 9007199254740993]
