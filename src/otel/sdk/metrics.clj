@@ -13,7 +13,8 @@
   themselves, and is what the spec recommends pairing with a monotonic counter on
   a system that restarts often."
   (:refer-clojure :exclude [count])
-  (:require [otel.attributes :as attr]
+  (:require [otel.any-value :as any]
+            [otel.attributes :as attr]
             [otel.metrics :as api]
             [otel.resource :as res]
             [otel.sdk.clock :as clock]
@@ -107,6 +108,23 @@
                (and (== d d) (not= d ##Inf) (not= d ##-Inf)))
              (catch Throwable _ false)))))
 
+(defn- number-data-point-admission?
+  "True when `v` has a valid OTLP NumberDataPoint wire arm.
+
+  Integer measurements use OTLP's signed Int64 `asInt` arm, so they must fit
+  that closed range even when a host number type can hold more. All other
+  numeric values use the double `asDouble` arm and must convert to a finite
+  double. This is admission only: it deliberately does not define aggregate
+  overflow behavior for sums or coerce a caller's accepted value."
+  [v]
+  (if (integer? v)
+    (<= any/min-int64 v any/max-int64)
+    (and (number? v)
+         (try
+           (let [d (double v)]
+             (and (== d d) (not= d ##Inf) (not= d ##-Inf)))
+           (catch Throwable _ false)))))
+
 (defrecord SdkInstrument [kind name description unit boundaries monotonic? callback state clock]
   api/Counter
   (add! [this v] (api/add! this v {}))
@@ -141,16 +159,18 @@
   api/Gauge
   (set-value! [this v] (api/set-value! this v {}))
   (set-value! [this v attrs]
-    (let [[attributes dropped-count] (point-attributes attrs)]
-      (swap! state update attributes update-gauge-cell v dropped-count))
+    (when (number-data-point-admission? v)
+      (let [[attributes dropped-count] (point-attributes attrs)]
+        (swap! state update attributes update-gauge-cell v dropped-count)))
     this))
 
 (defrecord CollectingObserver [state]
   api/Observer
   (observe! [this v] (api/observe! this v {}))
   (observe! [this v attrs]
-    (let [[attributes dropped-count] (point-attributes attrs)]
-      (swap! state update attributes update-gauge-cell v dropped-count))
+    (when (number-data-point-admission? v)
+      (let [[attributes dropped-count] (point-attributes attrs)]
+        (swap! state update attributes update-gauge-cell v dropped-count)))
     this))
 
 (defn- observe-async!
