@@ -89,6 +89,33 @@
       (testing "a gauge point describes an instant, so it carries no start time"
         (is (nil? (:start-time-unix-nano (point-for m {}))))))))
 
+(deftest number-data-point-admission-guards-sync-gauges-before-normalization
+  (let [{:keys [provider meter]} (setup)
+        gauge (api/gauge meter "number-data-point")
+        calls (atom 0)
+        normalize attributes/normalize-result
+        valid [any/min-int64 any/max-int64 9007199254740993 4.9e-324]
+        invalid [nil false "not-a-number" {:private "fixture"}
+                 ##NaN ##Inf ##-Inf
+                 (dec any/min-int64) (inc any/max-int64)]]
+    ;; Keep distinct attribute sets so every admitted wire arm is observable.
+    (doseq [[i v] (map-indexed vector valid)]
+      (is (identical? gauge (api/set-value! gauge v {:series i}))))
+    (let [before @(:state gauge)]
+      (with-redefs [attributes/normalize-result
+                    (fn [& args]
+                      (swap! calls inc)
+                      (apply normalize args))]
+        (doseq [v invalid]
+          (is (identical? gauge
+                          (api/set-value! gauge v {:series "must-not-normalize"}))))
+        (is (zero? @calls)))
+      (is (= before @(:state gauge))))
+    (let [points (:data-points (metric-named provider "number-data-point"))]
+      (is (= (count valid) (count points)))
+      (is (= (set valid) (set (map :value points))))
+      (is (= 4.9e-324 (:value (point-for {:data-points points} {"series" 3})))))))
+
 (deftest every-sdk-point-normalizes-and-counts-attributes-once
   (let [{:keys [provider meter]} (setup)
         counter (api/counter meter "requests")
@@ -342,6 +369,46 @@
     (reset! current 9)
     (testing "the callback runs again on the next collection"
       (is (= 9 (:value (point-for (metric-named provider "heap") {})))))))
+
+(deftest async-observer-number-data-point-admission-rejects-invalid-replacements
+  (let [{:keys [provider meter]} (setup)
+        phase (atom :valid)
+        calls (atom 0)
+        normalize attributes/normalize-result
+        gauge (api/observable-gauge
+               meter "async-number-data-point"
+               (fn [observer]
+                 (case @phase
+                   :valid (api/observe! observer 9007199254740993 {:series "kept"})
+                   ;; An invalid update after a valid observation in the same
+                   ;; callback must not replace it or normalize its attributes.
+                   :valid-then-invalid (do
+                                         (api/observe! observer 4.9e-324 {:series "kept"})
+                                         (api/observe! observer ##NaN {:series "kept"}))
+                   ;; A later callback with only an invalid value must replace
+                   ;; the old async snapshot with an empty one, not retain it.
+                   :invalid-only (api/observe! observer (inc any/max-int64)
+                                               {:series "must-not-normalize"}))))]
+    (is (= 9007199254740993
+           (:value (point-for (metric-named provider "async-number-data-point")
+                              {"series" "kept"}))))
+    (reset! phase :valid-then-invalid)
+    (with-redefs [attributes/normalize-result
+                  (fn [& args]
+                    (swap! calls inc)
+                    (apply normalize args))]
+      (is (= 4.9e-324
+             (:value (point-for (metric-named provider "async-number-data-point")
+                                {"series" "kept"}))))
+      (is (= 1 @calls)))
+    (reset! phase :invalid-only)
+    (reset! calls 0)
+    (with-redefs [attributes/normalize-result
+                  (fn [& args]
+                    (swap! calls inc)
+                    (apply normalize args))]
+      (is (empty? (:data-points (metric-named provider "async-number-data-point"))))
+      (is (zero? @calls)))))
 
 (deftest observable-counter-is-a-monotonic-sum
   (let [{:keys [provider meter]} (setup)]
