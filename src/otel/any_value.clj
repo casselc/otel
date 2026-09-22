@@ -170,6 +170,23 @@
 
     :else (fail! :unsupported-type {})))
 
+;; Identity guards the shortcut's fixed budget assumptions. Replacing defaults
+;; (even with an equal map) conservatively restores the generic options path.
+(def ^:private scalar-default-limits default-limits)
+
+(defn- default-scalar-result [value]
+  (cond
+    (string? value)
+    (let [size (string-bytes value)]
+      (when (<= size (:max-bytes scalar-default-limits))
+        {:value value :nodes 1 :bytes size :truncated? false}))
+
+    (boolean? value)
+    {:value value :nodes 1 :bytes 1 :truncated? false}
+
+    (and (integer? value) (<= min-int64 value max-int64))
+    {:value value :nodes 1 :bytes 8 :truncated? false}))
+
 (defn canonicalize
   "Return a non-throwing normalization result for one value.
 
@@ -177,7 +194,10 @@
   invalid or over-budget value contains :error and bounded explanatory data.
   Callers that instrument application code can therefore drop/report a bad
   value without changing the application's return or exception behavior."
-  ([value] (canonicalize value default-limits))
+  ([value]
+   (or (when (identical? default-limits scalar-default-limits)
+         (default-scalar-result value))
+       (canonicalize value default-limits)))
   ([value options]
    (let [options (limits options)]
      (try
