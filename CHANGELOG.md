@@ -77,6 +77,11 @@
   release, with isolated compiler-version caches and matching minimum-version
   and toolchain checks.
 
+- Avoid generic normalization bookkeeping for default root strings, Booleans,
+  and signed Int64 attributes. Preserve conservative string byte charging,
+  complete result metadata, and the existing fallback for limits and other
+  value shapes; explicit normalization options remain unchanged.
+
 - Preserve numeric histogram boundaries, including ratios and decimals, while
   validating their finite, strictly ordered double wire representation before
   registration (Refs #3). Precision collisions and overflow still reject

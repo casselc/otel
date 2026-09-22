@@ -21,6 +21,66 @@
   (is (= :int64-range (:error (any/canonicalize (dec any/min-int64)))))
   (is (= :int64-range (:error (any/canonicalize (inc any/max-int64))))))
 
+(defn- same-result? [left right]
+  ;; NaN is intentionally unequal to itself. All other result fields must
+  ;; still agree, including budgets, truncation and error details.
+  (and (= (dissoc left :value) (dissoc right :value))
+       (let [a (:value left) b (:value right)]
+         (or (= a b)
+             (and (float? a) (float? b) (not= a a) (not= b b))))))
+
+(deftest default-root-scalars-match-generic-whole-results
+  (doseq [value ["" "plain" "quote\"slash\\newline\n漢字😀" true false
+                 0 -1 1 9007199254740993 any/min-int64 any/max-int64
+                 (dec any/min-int64) (inc any/max-int64)
+                 18446744073709551615 nil 1.5 ##Inf ##-Inf ##NaN
+                 :a/b 'a/b any/empty-value (any/bytes [0 255])
+                 \a #{} [] {} [1 "two" false]
+                 {:nested ["😀" {:x true}]} {:a 1 "a" 2}]]
+    (is (same-result? (any/canonicalize value)
+                      (any/canonicalize value any/default-limits))
+        (str "whole-result parity for " (pr-str value))))
+  (is (= {:value false :nodes 1 :bytes 1 :truncated? false}
+         (any/canonicalize false)))
+  (is (= {:value 9007199254740993 :nodes 1 :bytes 8 :truncated? false}
+         (any/canonicalize 9007199254740993))))
+
+(deftest default-root-string-conservative-boundaries
+  (let [limit (quot (:max-bytes any/default-limits) 4)]
+    (doseq [unit ["a" "漢" "😀"]
+            delta [-1 0 1]]
+      ;; Jolt counts codepoints, JVM counts UTF-16 units. Build the boundary
+      ;; using this host's count, just like the existing conservative charge.
+      (let [value (str (apply str (repeat (quot limit (count unit)) unit))
+                       (if (pos? delta) "a" ""))
+            value (if (neg? delta) (subs value 0 (dec (count value))) value)
+            result (any/canonicalize value)]
+        (is (= (any/canonicalize value any/default-limits) result))
+        (if (pos? delta)
+          (is (= :byte-limit (:error result)))
+          (is (= {:value value :nodes 1 :bytes (* 4 (count value))
+                  :truncated? false} result)))))))
+
+(deftest generic-options-and-redefined-defaults-retain-budgets
+  (doseq [options [{:max-depth -1} {:max-nodes 0} {:max-bytes 0}
+                   {:max-bytes 7} {:value-length-limit 1}
+                   {:max-depth 1 :max-nodes 2 :max-bytes 12}
+                   {:unknown-option true}]
+          value ["漢😀" true false 42 nil [1 [2]]
+                 {:x ["abcdef" (any/bytes [1 2 3])]}]]
+    (let [expected (any/canonicalize value options)
+          defaults (merge any/default-limits options)]
+      (with-redefs [any/default-limits defaults]
+        (is (= expected (any/canonicalize value))))))
+  (is (= (any/canonicalize "漢😀")
+         (any/canonicalize "漢😀" {:max-bytes nil :unknown-option true})))
+  (doseq [i (range 32)
+          value [i (- i) (str "漢😀" i)
+                 [i false {:nested (str i)}]
+                 {:a [i :symbol] :b (any/bytes [i])}]]
+    (is (= (any/canonicalize value any/default-limits)
+           (any/canonicalize value)))))
+
 (deftest byte-strings-have-immutable-value-semantics
   (let [left (any/bytes [0 1 254 255])
         right (any/bytes '(0 1 254 255))]
