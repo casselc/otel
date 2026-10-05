@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add `otel.any-value/try-scalar-string` for allocation-light formatting of
+  admitted strings, Booleans and Int64 integers. Changed default limits or
+  canonicalizer roots, over-budget strings and other shapes decline to normal
+  canonicalization. No value cache or normalization-result API change.
+
 - Admit synchronous-gauge and asynchronous-observer measurements only when
   they have a valid OTLP NumberDataPoint representation: signed Int64 integers
   or finite double-wire values. Reject invalid inputs before attribute

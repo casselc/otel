@@ -152,3 +152,28 @@
           [:error :reason])))
   (is (= :wrong-type
          (get-in (wire/decode {:doubleValue ##Inf}) [:error :reason]))))
+(deftest scalar-text-shortcut-retains-normalization-authority
+  (doseq [value ["" "plain" "é😀\u0000" true false 0 -1
+                 any/min-int64 any/max-int64 9007199254740993]]
+    (is (= (str (:value (any/canonicalize value any/default-limits)))
+           (any/try-scalar-string value))))
+  (doseq [value [nil 1.5 :keyword 'symbol [] {} any/empty-value
+                 (any/bytes [0 255]) (dec any/min-int64) (inc any/max-int64)]]
+    (is (nil? (any/try-scalar-string value))))
+  (let [maximum (quot (:max-bytes any/default-limits) 4)
+        accepted (apply str (repeat maximum "x"))
+        rejected (str accepted "x")]
+    (is (identical? accepted (any/try-scalar-string accepted)))
+    (is (nil? (any/try-scalar-string rejected)))
+    (is (= :byte-limit (:error (any/canonicalize rejected)))))
+  (doseq [options [(into {} any/default-limits)
+                   (assoc any/default-limits :value-length-limit 1)
+                   (assoc any/default-limits :max-nodes 0)
+                   (assoc any/default-limits :max-bytes 0)]]
+    (with-redefs [any/default-limits options]
+      (doseq [value ["long" true 42]]
+        (is (nil? (any/try-scalar-string value))))))
+  (let [calls (atom 0)]
+    (with-redefs [any/canonicalize (fn [_] (swap! calls inc) {:value "custom"})]
+      (is (nil? (any/try-scalar-string "plain")))
+      (is (zero? @calls) "decline leaves invocation to the normal caller"))))

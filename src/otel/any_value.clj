@@ -210,3 +210,23 @@
            {:error (:reason (ex-data error))
             :details (dissoc (ex-data error) :otel.any-value/error :reason)}
            (throw error)))))))
+
+(def ^:private scalar-text-canonicalizer canonicalize)
+
+(defn try-scalar-string
+  "Return canonical scalar text without a normalization-result map, or nil
+  when the caller must use normal canonicalization. Only unchanged bounded
+  strings, Booleans and admitted Int64 integers qualify. Decline is not an
+  invalid-value verdict: structured/special/floating values and changed limits
+  or canonicalizer roots must retain the normal path. Does not cache values,
+  truncate, stringify unsupported objects, or change canonicalize's API."
+  [value]
+  (when (and (identical? default-limits scalar-default-limits)
+             (identical? canonicalize scalar-text-canonicalizer))
+    (cond
+      (string? value)
+      (when (<= (string-bytes value) (:max-bytes scalar-default-limits)) value)
+
+      (boolean? value) (str value)
+
+      (and (integer? value) (<= min-int64 value max-int64)) (str value))))
