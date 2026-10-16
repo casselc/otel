@@ -157,7 +157,7 @@
                  any/min-int64 any/max-int64 9007199254740993]]
     (is (= (str (:value (any/canonicalize value any/default-limits)))
            (any/try-scalar-string value))))
-  (doseq [value [nil 1.5 :keyword 'symbol [] {} any/empty-value
+  (doseq [value [nil 1.5 ##Inf ##-Inf ##NaN :keyword 'symbol [] {} any/empty-value
                  (any/bytes [0 255]) (dec any/min-int64) (inc any/max-int64)]]
     (is (nil? (any/try-scalar-string value))))
   (let [maximum (quot (:max-bytes any/default-limits) 4)
@@ -177,3 +177,13 @@
     (with-redefs [any/canonicalize (fn [_] (swap! calls inc) {:value "custom"})]
       (is (nil? (any/try-scalar-string "plain")))
       (is (zero? @calls) "decline leaves invocation to the normal caller"))))
+
+(deftest scalar-text-conservative-multibyte-boundaries
+  (let [limit (quot (:max-bytes any/default-limits) 4)]
+    (doseq [unit ["a" "漢" "😀"]]
+      (let [accepted (apply str (repeat (quot limit (count unit)) unit))
+            rejected (str accepted "x")]
+        (is (identical? accepted (any/try-scalar-string accepted)))
+        (is (= accepted (:value (any/canonicalize accepted any/default-limits))))
+        (is (nil? (any/try-scalar-string rejected)))
+        (is (= :byte-limit (:error (any/canonicalize rejected any/default-limits))))))))
