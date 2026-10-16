@@ -145,6 +145,22 @@
 
 (def ^:private shutdown-join-poll-ms 25)
 
+(defn shutdown-policy
+  "Internal validated worker policy. Explicit owner options override the
+  existing defaults; unrelated component options are ignored. Durations are
+  finite integer milliseconds, not promises of delivery or hard I/O deadlines."
+  [options]
+  (when-not (map? options)
+    (throw (ex-info "Invalid shutdown options" {:otel.sdk/error :invalid-shutdown-options})))
+  (let [policy {:shutdown-cancel-grace-ms (get options :shutdown-cancel-grace-ms shutdown-cancel-grace-ms)
+                :shutdown-join-bound-ms (get options :shutdown-join-bound-ms shutdown-join-bound-ms)}]
+    (doseq [[field minimum] [[:shutdown-cancel-grace-ms 0] [:shutdown-join-bound-ms 1]]
+            :let [value (get policy field)]]
+      (when-not (and (integer? value) (<= minimum value 2147483647))
+        (throw (ex-info "Invalid shutdown duration"
+                        {:otel.sdk/error :invalid-shutdown-options :field field}))))
+    policy))
+
 (defn await-owned-worker!
   "Retire-aware wait for one processor's worker.
 
@@ -153,15 +169,20 @@
   trigger interruption of the exact `worker` argument. The worker must then
   terminate within `shutdown-join-bound-ms`; otherwise this throws and the
   caller must not close the exporter. No sibling or caller-owned force-flush
-  thread is interrupted."
-  [worker state]
+  thread is interrupted. Optional owner options override the cooperative grace
+  and post-grace join bound; the two-argument form preserves existing defaults."
+  ([worker state] (await-owned-worker! worker state {}))
+  ([worker state options]
+  (let [{grace-ms :shutdown-cancel-grace-ms join-ms :shutdown-join-bound-ms}
+        (shutdown-policy options)]
   (when-not (:shutdown? @state)
     (throw (ex-info "worker cancellation requires retired admission"
                     {:otel.sdk/error :worker-admission-active})))
   (when worker
-    (.join worker shutdown-cancel-grace-ms)
+    ;; Thread.join(0) is unbounded: zero grace must skip that call.
+    (when (pos? grace-ms) (.join worker grace-ms))
     (let [deadline (+ (System/nanoTime)
-                      (* shutdown-join-bound-ms 1000000))]
+                      (* join-ms 1000000))]
       (loop [interrupted? false]
         (when (.isAlive worker)
           (let [owned? (:worker-export-active? @state)
@@ -178,13 +199,13 @@
             (when-not (pos? remaining-ns)
               (throw (ex-info "export worker did not terminate after cancellation"
                               {:otel.sdk/error :worker-join-timeout
-                               :timeout-ms shutdown-join-bound-ms})))
+                               :timeout-ms join-ms})))
             (.join worker
                    (max 1
                         (min shutdown-join-poll-ms
                              (quot (+ remaining-ns 999999) 1000000))))
             (recur interrupted?))))))
-  true)
+  true)))
 
 (defn- observe!
   [outcome]
