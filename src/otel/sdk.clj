@@ -349,6 +349,12 @@
     :metrics?         collect metrics (default true)
     :runtime-metrics? register the Chez runtime instruments (default true)
     :metric-interval-ms  metric collection period (default 60000)
+    :metric-reader-options explicit per-reader shutdown policy:
+                      :shutdown-cancel-grace-ms (default 250, zero skips grace)
+                      :shutdown-join-bound-ms (default 2000 after grace).
+                      Finite integer milliseconds, max2147483647; join bound
+                      must be positive. Not sourced from environment variables;
+                      no delivery or hard native-I/O deadline guarantee.
     :logs?            emit the logs signal (default false)
     :bridge-logging?  route clojure.tools.logging through it (default true when
                       :logs? is on) -- additive, the existing backend keeps working
@@ -359,13 +365,21 @@
   nothing, which is how the spec says to turn telemetry off without code changes."
   ([] (init! {}))
   ([{:keys [service-name resource sampler exporter processor span-processors
-            metrics? runtime-metrics? metric-interval-ms logs? bridge-logging?]
+            metrics? runtime-metrics? metric-interval-ms metric-reader-options
+            logs? bridge-logging?]
      :or {exporter :otlp processor :batch metrics? true runtime-metrics? true
           logs? false bridge-logging? true}
      :as opts}]
    (let [receipt (or (:construction-receipt opts) (lifecycle/construction-receipt))]
      (lifecycle/with-construction! receipt
        (fn []
+         (let [options (if (nil? metric-reader-options) {} metric-reader-options)]
+           (when-not (and (map? options)
+                          (every? #{:shutdown-cancel-grace-ms :shutdown-join-bound-ms}
+                                  (keys options)))
+             (throw (ex-info "Invalid metric reader options"
+                             {:otel.sdk/error :invalid-metric-reader-options})))
+           (lifecycle/shutdown-policy options))
          (check-exporter exporter)
          (check-span-processors span-processors)
          ;; Account only exact caller-supplied faces. Unknown/keyword factories
@@ -429,7 +443,8 @@
                           (acquire-signal! receipt metric-exporter :metrics
                             #(export/shutdown-metric-exporter! metric-exporter)
                             #(sdk-metrics/periodic-reader mp metric-exporter
-                               {:interval-ms (or metric-interval-ms 60000)} %)))
+                               (merge {:interval-ms (or metric-interval-ms 60000)}
+                                      metric-reader-options) %)))
                  log-factory build-log-exporter
                  log-exporter (when logs?
                                 (enter-exporter-factory! receipt exporter :logs log-factory)

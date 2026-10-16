@@ -35,6 +35,7 @@
     otel.sdk-test
     otel.sdk.logs-test
     otel.sdk.metrics-test
+    otel.sdk.metric-reader-policy-test
     otel.sdk.sampler-test
     otel.sdk.shutdown-cancellation-test
     otel.sdk.tracer-test

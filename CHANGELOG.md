@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Allow explicit per-metric-reader shutdown grace and post-cancellation join
+  bounds, also through SDK startup's :metric-reader-options. Validate finite
+  integer durations before acquiring resources, keep defaults unchanged, and
+  treat zero grace as no wait rather than an unbounded Thread.join(0). Healthy
+  multi-table exports can select a drain budget without global policy mutation;
+  cancellation, settlement and failure semantics remain unchanged. Refs #54.
+
 - Add `otel.any-value/try-scalar-string` for allocation-light formatting of
   admitted strings, Booleans and Int64 integers. Changed default limits or
   canonicalizer roots, over-budget strings and other shapes decline to normal

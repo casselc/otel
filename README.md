@@ -120,6 +120,27 @@ A metric reader exits only after an owned collection that observed retirement
 before it began, so a measurement accepted between a scheduled collection and
 the retirement decision is included in one final export.
 
+Shutdown ownership checks establish ordering, not a guarantee that normal work
+fits the default grace.
+For a metric reader whose normal exports can take longer, configure its owner:
+
+```clojure
+(sdk/init! {:metric-reader-options {:shutdown-cancel-grace-ms 2000
+                                   :shutdown-join-bound-ms 3000}
+            ;; ... normal SDK/exporter settings ...
+            })
+```
+
+Direct `otel.sdk.metrics/periodic-reader` construction accepts the same two
+options alongside `:interval-ms`. This does not change sibling owners or
+force-flush timeouts. Defaults remain 250 ms grace plus a 2000 ms post-grace
+join bound. Values must be integer milliseconds no greater than 2147483647;
+grace may be zero (skip waiting), while the join bound must be positive.
+These options are explicit, not environment-variable configuration. A larger
+budget is not proof of delivery, native persistence or a hard shutdown deadline.
+Cancellation still yields conservative failure; exporter release still needs
+worker settlement.
+
 The executable [shutdown ownership model](formal/quint/shutdown-lifecycle.md)
 documents the shared worker/exporter state machine, its abstraction boundary,
 and the causal mutation controls used to keep this ordering check meaningful.

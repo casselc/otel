@@ -429,7 +429,10 @@
         ;; in-flight or shutdown drain can be cancelled without interrupting a
         ;; caller-owned force-flush or releasing the exporter early.
         (swap! state assoc :shutdown? true)
-        (lifecycle/await-owned-worker! worker state)
+        (if (some #(contains? config %)
+                  [:shutdown-cancel-grace-ms :shutdown-join-bound-ms])
+          (lifecycle/await-owned-worker! worker state config)
+          (lifecycle/await-owned-worker! worker state))
         (let [close-value (locking state
                             (lifecycle/release-exporter! state
                               #(export/shutdown-metric-exporter! exporter)))]
@@ -447,6 +450,7 @@
   [provider exporter opts receipt]
   (lifecycle/with-construction! receipt
   (fn []
+   (lifecycle/shutdown-policy opts)
    (let [config (merge default-reader-config opts)
          state (atom {:shutdown? false
                       :shutdown-cancelled? false
