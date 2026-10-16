@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add `otel.any-value/try-scalar-string` for allocation-light formatting of
+  admitted strings, Booleans and Int64 integers. Changed default limits or
+  canonicalizer roots, over-budget strings and other shapes decline to normal
+  canonicalization. No value cache or normalization-result API change.
+
 - Make the stalled-OTLP shutdown test visit the healthy destination before
   blocking its sequential flush traversal. Add a controlled late-destination
   test: successful shutdown does not make a subsequent flush admissible.
