@@ -174,6 +174,45 @@
           (when (= destination name) processor))
         (:pipelines pipelines)))
 
+(deftest shutdown-can-retire-a-later-destination-before-flush-reaches-it
+  (let [pipelines (export/independent-batch-pipelines
+                   (array-map :first {:exporter (memory/exporter)}
+                              :later {:exporter (memory/exporter)}))
+        first-processor (named-processor pipelines :first)
+        entered (promise)
+        release (promise)
+        result (promise)
+        original-flush export/force-flush!
+        caller (Thread. #(deliver result
+                                  (export/force-flush-pipelines! pipelines)))]
+    (try
+      ;; Hold the traversal between destinations, without sleeping or changing
+      ;; the later processor's real admission/flush/shutdown implementation.
+      (with-redefs [export/force-flush!
+                    (fn [processor]
+                      (if (identical? processor first-processor)
+                        (do
+                          (deliver entered true)
+                          (when-not (= true (deref release 3000 ::not-released))
+                            (throw (ex-info "flush control was not released" {})))
+                          false)
+                        (original-flush processor)))]
+        (.start caller)
+        (is (= true (deref entered 2000 ::not-entered)))
+        (is (= {:first {:ok? true} :later {:ok? true}}
+               (export/shutdown-pipelines! pipelines)))
+        (deliver release true)
+        (is (= {:first {:ok? false :failure :returned-false}
+                :later {:ok? false :failure :returned-false}}
+               (deref result 2000 ::still-blocked))
+            "successful shutdown does not admit a later force-flush")
+        (.join caller 2000)
+        (is (not (.isAlive caller))))
+      (finally
+        (deliver release true)
+        (.join caller 2000)
+        (export/shutdown-pipelines! pipelines)))))
+
 (deftest shutdown-cancels-only-the-owned-stalled-otlp-worker
   (let [collector (start-stalled-collector "/v1/traces")
         remote-delegate (otlp/exporter {:traces-url (:url collector)
@@ -187,14 +226,18 @@
         healthy (->CountingExporter healthy-delegate healthy-shutdowns)
         pipelines (export/independent-batch-pipelines
                    (array-map
-                    :remote {:exporter remote
-                             :config {:schedule-delay-ms 1
-                                      :max-export-batch-size 1
-                                      :max-queue-size 2}}
+                    ;; Flush visits destinations sequentially. Visit healthy
+                    ;; before blocking on remote so shutdown cannot retire its
+                    ;; admission before this caller reaches it. A late flush
+                    ;; is allowed to return false even after successful export.
                     :healthy {:exporter healthy
                               :config {:schedule-delay-ms 1
                                        :max-export-batch-size 1
-                                       :max-queue-size 2}}))
+                                       :max-queue-size 2}}
+                    :remote {:exporter remote
+                             :config {:schedule-delay-ms 1
+                                      :max-export-batch-size 1
+                                      :max-queue-size 2}}))
         provider (sdk-tracer/tracer-provider
                   {:resource resource/empty-resource
                    :processors [pipelines]})
