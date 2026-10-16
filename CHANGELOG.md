@@ -7,6 +7,11 @@
   canonicalizer roots, over-budget strings and other shapes decline to normal
   canonicalization. No value cache or normalization-result API change.
 
+- Make the stalled-OTLP shutdown test visit the healthy destination before
+  blocking its sequential flush traversal. Add a controlled late-destination
+  test: successful shutdown does not make a subsequent flush admissible.
+  No production lifecycle behavior changes.
+
 - Admit synchronous-gauge and asynchronous-observer measurements only when
   they have a valid OTLP NumberDataPoint representation: signed Int64 integers
   or finite double-wire values. Reject invalid inputs before attribute
