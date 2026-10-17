@@ -178,6 +178,23 @@
       (is (nil? (any/try-scalar-string "plain")))
       (is (zero? @calls) "decline leaves invocation to the normal caller"))))
 
+(deftest scalar-text-default-qualification-is-sdk-owned
+  (is (true? (any/default-scalar-string?)))
+  (let [calls (atom 0)
+        replacement (fn [value] (swap! calls inc) value)]
+    (with-redefs [any/try-scalar-string replacement]
+      ;; Capturing this replacement in a later-loading consumer cannot make
+      ;; it the SDK default. Qualification must not invoke unknown code.
+      (let [consumer-snapshot any/try-scalar-string]
+        (is (identical? replacement consumer-snapshot))
+        (is (false? (any/default-scalar-string?)))
+        (is (zero? @calls)))))
+  (with-redefs [any/canonicalize (fn [_] {:value "custom"})]
+    (is (false? (any/default-scalar-string?))))
+  (with-redefs [any/default-limits (into {} any/default-limits)]
+    (is (false? (any/default-scalar-string?))))
+  (is (true? (any/default-scalar-string?))))
+
 (deftest scalar-text-conservative-multibyte-boundaries
   (let [limit (quot (:max-bytes any/default-limits) 4)]
     (doseq [unit ["a" "漢" "😀"]]

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add `otel.any-value/default-scalar-string?` so consumers can qualify the
+  original side-effect-free scalar helper at the SDK definition boundary,
+  rather than trusting a replacement captured during consumer startup.
+  Changed helpers, canonicalizers or limits decline without invoking them;
+  value bounds and normal formatting behavior remain unchanged.
+
 - Account exact caller-supplied exporter faces before rejecting metric reader
   policy options. Matching failed construction can report unacquired faces
   without starting factories/workers; supplied processors remain unknown.
