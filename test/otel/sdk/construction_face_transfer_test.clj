@@ -80,6 +80,31 @@
     (is (= :unknown (:ownership
                      (face receipt error (exporter (atom {}) (atom false) true) :logs))))))
 
+(deftest early-reader-policy-rejection-accounts-input-faces-without-acquisition
+  (doseq [policy [false {:shutdown-cancel-grace-ms -1}]
+          supplied-processor? [false true]]
+    (let [receipt (lifecycle/construction-receipt)
+          counts (atom {:spans 0 :metrics 0 :logs 0})
+          resource (exporter counts (atom false) true)
+          processor (when supplied-processor? (export/simple-processor resource))
+          factories (atom 0)
+          globals [(sdk/tracer-provider) (sdk/meter-provider) (sdk/logger-provider)]]
+      (try
+        (let [error (with-redefs [sdk/build-span-exporter (fn [& _] (swap! factories inc))
+                                 lifecycle/start-owned-worker! (fn [& _] (swap! factories inc))]
+                      (failure (cond-> {:exporter resource :logs? true :runtime-metrics? false
+                                        :metric-reader-options policy :construction-receipt receipt}
+                                 processor (assoc :span-processors [processor]))))]
+          (is (some? error)) (is (zero? @factories))
+          (is (= {:spans 0 :metrics 0 :logs 0} @counts))
+          (is (= :confirmed (:quiescence (lifecycle/construction-failure-status receipt error))))
+          (doseq [signal [:spans :metrics :logs]]
+            (is (= (if supplied-processor? :unknown :unacquired)
+                   (:ownership (face receipt error resource signal)))))
+          (is (= :unknown (:ownership (face (lifecycle/construction-receipt) error resource :spans))))
+          (is (= globals [(sdk/tracer-provider) (sdk/meter-provider) (sdk/logger-provider)])))
+        (finally (when processor (export/shutdown! processor)))))))
+
 (deftest foreign-factory-and-wrapper-evidence-stays-unknown
   (let [receipt (lifecycle/construction-receipt)
         counts (atom {:spans 0 :metrics 0 :logs 0})

@@ -373,13 +373,6 @@
    (let [receipt (or (:construction-receipt opts) (lifecycle/construction-receipt))]
      (lifecycle/with-construction! receipt
        (fn []
-         (let [options (if (nil? metric-reader-options) {} metric-reader-options)]
-           (when-not (and (map? options)
-                          (every? #{:shutdown-cancel-grace-ms :shutdown-join-bound-ms}
-                                  (keys options)))
-             (throw (ex-info "Invalid metric reader options"
-                             {:otel.sdk/error :invalid-metric-reader-options})))
-           (lifecycle/shutdown-policy options))
          (check-exporter exporter)
          (check-span-processors span-processors)
          ;; Account only exact caller-supplied faces. Unknown/keyword factories
@@ -397,6 +390,16 @@
          (when (some? span-processors)
            (doseq [signal [:spans :metrics :logs]]
              (lifecycle/mark-construction-face! receipt exporter signal :unknown)))
+         ;; Validation acquires nothing, but a matching failed invocation must
+         ;; still account for its exact caller faces before it can reject.
+         ;; Supplied processors retain their conservative unknown permission.
+         (let [options (if (nil? metric-reader-options) {} metric-reader-options)]
+           (when-not (and (map? options)
+                          (every? #{:shutdown-cancel-grace-ms :shutdown-join-bound-ms}
+                                  (keys options)))
+             (throw (ex-info "Invalid metric reader options"
+                             {:otel.sdk/error :invalid-metric-reader-options})))
+           (lifecycle/shutdown-policy options))
          (if (disabled?)
            {:disabled? true :terminal (lifecycle/terminal-action)}
            (let [base (res/merge-resources
