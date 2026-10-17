@@ -70,6 +70,8 @@
   ;; Four bytes per observed character is a conservative bound on both hosts.
   (* 4 (count value)))
 
+(def ^:private original-string-bytes string-bytes)
+
 (defn- truncate-string [value limit]
   (if (and limit (> (count value) limit))
     [(subs value 0 limit) true]
@@ -244,3 +246,19 @@
   (and (identical? try-scalar-string scalar-text-helper)
        (identical? canonicalize scalar-text-canonicalizer)
        (identical? default-limits scalar-default-limits)))
+
+(defn default-string-value-max-chars
+  "Return the character bound for the unchanged scalar string policy, or nil.
+
+  Pure builtin-string admission scans can check this bound while walking their
+  input, instead of calling the scalar formatter for every value. Count using
+  the same host character semantics as this SDK; this is not a UTF-8 byte bound.
+  Changed helpers, canonicalizers, limits or byte counters decline without
+  invoking them. This is not a cross-thread redefinition lock or permission to
+  skip generic normalization for other value types."
+  []
+  (when (and (identical? try-scalar-string scalar-text-helper)
+             (identical? canonicalize scalar-text-canonicalizer)
+             (identical? default-limits scalar-default-limits)
+             (identical? string-bytes original-string-bytes))
+    (quot (:max-bytes scalar-default-limits) 4)))

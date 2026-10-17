@@ -195,6 +195,28 @@
     (is (false? (any/default-scalar-string?))))
   (is (true? (any/default-scalar-string?))))
 
+(deftest string-admission-bound-is-owned-and-declines-without-callbacks
+  (is (= (quot (:max-bytes any/default-limits) 4)
+         (any/default-string-value-max-chars)))
+  (let [calls (atom 0) replacement (fn [& _] (swap! calls inc) "unchanged")]
+    (with-redefs [any/try-scalar-string replacement]
+      (is (nil? (any/default-string-value-max-chars))))
+    (with-redefs [any/canonicalize replacement]
+      (is (nil? (any/default-string-value-max-chars))))
+    (with-redefs [any/string-bytes replacement]
+      (is (nil? (any/default-string-value-max-chars))))
+    (with-redefs [any/default-limits (into {} any/default-limits)]
+      (is (nil? (any/default-string-value-max-chars))))
+    (is (zero? @calls) "qualification never probes a replacement"))
+  (is (some? (any/default-string-value-max-chars))))
+
+(deftest string-admission-bound-matches-original-policy
+  (let [limit (any/default-string-value-max-chars)]
+    (doseq [text ["" "ascii" "漢字😀" (apply str (repeat limit "x"))
+                  (apply str (repeat (inc limit) "x"))]]
+      (is (= (<= (count text) limit)
+             (some? (any/try-scalar-string text)))))))
+
 (deftest scalar-text-conservative-multibyte-boundaries
   (let [limit (quot (:max-bytes any/default-limits) 4)]
     (doseq [unit ["a" "漢" "😀"]]

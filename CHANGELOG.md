@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Expose the unchanged scalar string policy's character bound for callback-free
+  builtin-string admission scans. Changed helpers or policy decline without
+  being called; ordinary normalization and limits remain unchanged.
+
 - Add `otel.any-value/default-scalar-string?` so consumers can qualify the
   original side-effect-free scalar helper at the SDK definition boundary,
   rather than trusting a replacement captured during consumer startup.
