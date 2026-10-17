@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Account exact caller-supplied exporter faces before rejecting metric reader
+  policy options. Matching failed construction can report unacquired faces
+  without starting factories/workers; supplied processors remain unknown.
+  Preserve consumer cleanup fences and do not infer ownership from absence.
+  Refs #56.
+
 - Allow explicit per-metric-reader shutdown grace and post-cancellation join
   bounds, also through SDK startup's :metric-reader-options. Validate finite
   integer durations before acquiring resources, keep defaults unchanged, and
