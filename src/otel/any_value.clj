@@ -230,3 +230,17 @@
       (boolean? value) (str value)
 
       (and (integer? value) (<= min-int64 value max-int64)) (str value))))
+
+(def ^:private scalar-text-helper try-scalar-string)
+
+(defn default-scalar-string?
+  "True only while scalar text uses the SDK's original helper, canonicalizer
+  and limits. Lets callers qualify a side-effect-free admission scan without
+  treating an arbitrary helper installed before their own startup as stock.
+  Does not invoke the helper or admit a value; try-scalar-string still owns
+  per-value bounds. Private SDK implementation roots are trusted, not sealed
+  against deliberate mutation; this is not a cross-thread redefinition lock."
+  []
+  (and (identical? try-scalar-string scalar-text-helper)
+       (identical? canonicalize scalar-text-canonicalizer)
+       (identical? default-limits scalar-default-limits)))
