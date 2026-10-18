@@ -118,6 +118,9 @@
                      (pos? (get config option)))
         (throw (ex-info "span batch options must be positive integers"
                         {:option option}))))
+    (when (> (:max-export-batch-size config) (:max-queue-size config))
+      (throw (ex-info "span export batch size must not exceed queue capacity"
+                      {:option :max-export-batch-size})))
     config))
 
 (defn- take-batch!
@@ -183,13 +186,19 @@
   schedule-delay, which for the default 5s config is a visible stall at exit."
   50)
 
+(defn- sleep-slice! [millis]
+  (Thread/sleep millis))
+
 (defn- sleep-until-due
-  "Sleep for `delay-ms`, in slices, returning early once shutdown is requested."
-  [state delay-ms]
+  "Release the worker on its deadline, shutdown, or a ready export batch.
+  Reuse the bounded shutdown poll rather than interrupting exporter I/O or
+  making nonblocking producers acquire the worker's export monitor."
+  [state delay-ms batch-size]
   (loop [remaining delay-ms]
-    (when (and (pos? remaining) (not (:shutdown? @state)))
+    (when (and (pos? remaining) (not (:shutdown? @state))
+               (< (count (:queue @state)) batch-size))
       (let [slice (min shutdown-poll-ms remaining)]
-        (Thread/sleep slice)
+        (sleep-slice! slice)
         (recur (- remaining slice))))))
 
 (defn- final-span-drain! [exporter state config]
@@ -304,7 +313,8 @@
          worker (Thread.
                   (fn []
                     (loop []
-                      (sleep-until-due state (:schedule-delay-ms config))
+                      (sleep-until-due state (:schedule-delay-ms config)
+                                       (:max-export-batch-size config))
                       ;; Drain unconditionally, including on the way out: spans
                       ;; ended just before shutdown must still be exported.
                       (locking state

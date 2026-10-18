@@ -914,17 +914,27 @@
       (finally (export/shutdown! proc)))))
 
 (deftest batch-processor-drops-when-the-queue-is-full
-  (let [exporter (memory/exporter)
-        proc (export/batch-processor exporter {:schedule-delay-ms 60000 :max-queue-size 2})
-        provider (sdk/tracer-provider {:processors [proc] :resource res/empty-resource})
-        tracer (sdk/get-tracer provider {:name "s"})]
-    (try
-      (dotimes [i 10] (trace/with-span [sp tracer (str "op" i)]))
-      (export/force-flush! proc)
-      (testing "a full queue drops spans rather than blocking the application"
-        (is (= 2 (count (memory/spans exporter))))
-        (is (= 8 (export/dropped-count proc))))
-      (finally (export/shutdown! proc)))))
+  ;; Hold the real worker at its wait seam. Queue-bound testing must not assume
+  ;; that a healthy worker ignores ready batches until the schedule expires.
+  (let [release (promise) entered (promise)
+        wait-var (ns-resolve 'otel.sdk.export 'sleep-until-due) original @wait-var]
+    (with-redefs-fn
+      {wait-var (fn [& args] (deliver entered true) @release (apply original args))}
+      (fn []
+        (let [exporter (memory/exporter)
+              proc (export/batch-processor exporter {:schedule-delay-ms 60000
+                                                    :max-queue-size 2
+                                                    :max-export-batch-size 2})
+              provider (sdk/tracer-provider {:processors [proc] :resource res/empty-resource})
+              tracer (sdk/get-tracer provider {:name "s"})]
+          (try
+            (is (= true (deref entered 1000 ::timeout)))
+            (dotimes [i 10] (trace/with-span [sp tracer (str "op" i)]))
+            (export/force-flush! proc)
+            (testing "a full queue drops spans rather than blocking the application"
+              (is (= 2 (count (memory/spans exporter))))
+              (is (= 8 (export/dropped-count proc))))
+            (finally (deliver release true) (export/shutdown! proc))))))))
 
 (deftest batch-processor-shutdown-flushes
   (let [exporter (memory/exporter)

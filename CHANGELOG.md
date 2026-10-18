@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Release the span batch worker's wait when a complete batch is queued, using
+  the existing bounded wait slices without producer blocking or normal-use
+  interrupts. Keep scheduled partial batches, serialized exports and ownership
+  barriers unchanged. Reject batch sizes larger than the queue before starting
+  workers, including independent destinations. Refs #60.
+
 - Expose the unchanged scalar string policy's character bound for callback-free
   builtin-string admission scans. Changed helpers or policy decline without
   being called; ordinary normalization and limits remain unchanged.
