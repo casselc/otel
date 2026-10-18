@@ -296,6 +296,15 @@ a boolean when present.
 
 ### Independent span destinations
 
+The span batch worker exports when a complete batch is ready, without waiting
+out the schedule delay. It checks readiness during its existing short wait
+slices (at most 50ms per slice); this is not a hard real-time deadline. An idle,
+underfilled queue still exports on schedule. Once a drain starts, it keeps the
+existing drain-all behavior, including its final partial batch. Ending a span
+never waits for exporter I/O. Batch size must be no larger than queue capacity;
+when configuring a smaller queue, also choose an appropriate
+`:max-export-batch-size`.
+
 One tracer provider can send the same canonical spans to several independently
 bounded destinations. `independent-batch-pipelines` composes the existing batch
 processor rather than adding another queue: each destination has its own worker,
