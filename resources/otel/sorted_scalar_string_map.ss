@@ -37,8 +37,9 @@
           (copy-tree! (pvec-nth! tree 4) out)))
       ;; The wrapper UID alone does not attest key/value/child positions. This
       ;; defining-SDK prototype has distinct keys/values and both subtrees.
-      ;; Qualify geometry/order independently of live policy-root admission:
-      ;; a temporary policy replacement must not permanently disable loading.
+      ;; Qualify independently of the six live SDK scalar-policy roots: their
+      ;; temporary replacement must not permanently disable loading. The core
+      ;; operation table is deliberately frozen, not a refreshable policy hook.
       (unless
         (let ((tree (jolt-ref-get prototype tree-key)))
           (and (eqv? (jolt-ref-get prototype count-key) 3)
