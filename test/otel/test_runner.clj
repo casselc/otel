@@ -22,6 +22,7 @@
     otel.dependency-resolution-test
     otel.sdk.clock-test
     otel.sdk.batch-readiness-test
+    otel.sdk.batch-drain-boundary-test
     otel.sdk.construction-rollback-test
     otel.sdk.construction-face-transfer-test
     otel.sdk.pipeline-construction-face-test

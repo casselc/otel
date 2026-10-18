@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Recheck the span batch worker's schedule after each live export, so arrivals
+  during exporter I/O can form a batch instead of immediately causing a chain
+  of small exports. Full batches still release the existing readiness wait;
+  explicit flush and retirement still drain all accepted work. Keep bounded
+  admission, serialized callbacks, cancellation and settlement rules unchanged.
+  Refs #62.
+
 - Release the span batch worker's wait when a complete batch is queued, using
   the existing bounded wait slices without producer blocking or normal-use
   interrupts. Keep scheduled partial batches, serialized exports and ownership

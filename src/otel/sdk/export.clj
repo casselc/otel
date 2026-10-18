@@ -157,7 +157,9 @@
   false)
 
 (defn- drain!
-  "Export everything queued and retain scalar delivery evidence for its owner."
+  "Export queued spans and retain scalar delivery evidence for the owner.
+  A live worker returns after one batch so its next turn checks readiness and
+  the schedule again. Caller-owned and retiring drains still empty the queue."
   [exporter state batch-size worker-owned?]
   (loop [ok true]
     (let [batch (take-batch! state batch-size)]
@@ -178,7 +180,9 @@
                                + span-count))))
           (if (and worker-owned? (:shutdown-cancelled? @state))
             (fail-queued-after-cancellation! state)
-            (recur (and exported? ok))))))))
+            (if (and worker-owned? (not (:shutdown? @state)))
+              (and exported? ok)
+              (recur (and exported? ok)))))))))
 
 (def ^:private shutdown-poll-ms
   "How often the worker checks for shutdown while waiting out its export interval.
