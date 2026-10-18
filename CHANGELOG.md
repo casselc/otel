@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add optional `otel.any-value/try-sorted-scalar-string-map` to normalize
+  bounded stock sorted maps into fresh plain scalar-text maps. The SDK checks
+  original policy roots, operation-table identity and node geometry before
+  conversion. Custom operations and unsupported hosts/values decline without
+  callbacks; comparators are never invoked. Existing map-kind-preserving
+  conversion and normal capture/normalization remain unchanged.
+
 - Add optional `otel.any-value/try-scalar-string-map` for bounded builtin
   primitive maps on qualified Jolt runtimes. The SDK owns original-policy
   checks; changed helpers, unsupported inputs or hosts decline to ordinary

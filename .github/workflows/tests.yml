@@ -90,5 +90,7 @@ jobs:
           jolt -Srepro -Sdescribe
       - name: Require the real native scalar-map capability
         run: jolt -Srepro -M:scalar-map-native-test
+      - name: Require guarded sorted-map normalization and geometry controls
+        run: jolt -Srepro -M:sorted-scalar-map-native-test
       - name: Retain ordinary AnyValue semantics
         run: jolt -Srepro -M:test -m otel.test-runner any-value

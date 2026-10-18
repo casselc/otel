@@ -300,3 +300,40 @@
   ;; The native kernel owns the live SDK-root checks supplied by this defining
   ;; namespace; repeating them here would add a second policy boundary.
   (or (@scalar-string-map-converter value) nil))
+
+;; Constructed in this defining namespace under the same trusted ordinary-core
+;; assumption as the existing native helper; not sampled from caller input.
+(def ^:private scalar-sorted-map-prototype
+  (sorted-map "$scalar-probe-a" 7 "$scalar-probe-b" "probe-text" "$scalar-probe-c" false))
+
+(defn- load-sorted-scalar-string-map-converter []
+  (try
+    (require 'otel.any-value-native)
+    ((ns-resolve 'otel.any-value-native 'load-sorted-string-map-converter!)
+     [[#'try-scalar-string scalar-text-helper]
+      [#'canonicalize scalar-text-canonicalizer]
+      [#'default-limits scalar-default-limits]
+      [#'string-bytes original-string-bytes]
+      [#'min-int64 scalar-map-min-int64]
+      [#'max-int64 scalar-map-max-int64]]
+     (quot (:max-bytes scalar-default-limits) 4)
+     scalar-sorted-map-prototype)
+    (catch Throwable _ (constantly nil))))
+
+(def ^:private sorted-scalar-string-map-converter
+  (delay (load-sorted-scalar-string-map-converter)))
+
+(defn try-sorted-scalar-string-map
+  "Return a fresh plain scalar-text map from an admitted sorted map, or nil.
+
+  Unlike try-scalar-string-map, this deliberately normalizes to the same plain
+  map as (into {} (map scalar-conversion) input); it does not preserve sorted
+  map kind. Only stock operations, string keys, bounded strings/Booleans/native
+  fixnums and at most 128 entries qualify under the unchanged SDK policy.
+  Unknown operations/layouts, malformed node shapes/counts, changed policies and unsupported
+  hosts decline without invoking callbacks. No comparator is called. Metadata
+  is dropped, input is untouched, and nil requires the caller's normal path.
+  Ordinary core behavior and private implementation roots remain trusted;
+  this is not a seal against their mutation or a cross-thread redefinition lock."
+  [value]
+  (or (@sorted-scalar-string-map-converter value) nil))
