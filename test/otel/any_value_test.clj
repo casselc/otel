@@ -226,3 +226,13 @@
         (is (= accepted (:value (any/canonicalize accepted any/default-limits))))
         (is (nil? (any/try-scalar-string rejected)))
         (is (= :byte-limit (:error (any/canonicalize rejected any/default-limits))))))))
+
+(deftest optional-scalar-map-decline-is-not-a-normalization-verdict
+  (doseq [value [nil {} {"small" 1} (sorted-map "x" 3)
+                 {"nested" [1 false]} {"empty" any/empty-value}]]
+    (is (nil? (any/try-scalar-string-map value))))
+  ;; The scalar API remains the portable fallback. An optional map decline
+  ;; neither drops these values nor changes their ordinary representations.
+  (is (= "1" (any/try-scalar-string 1)))
+  (is (= "false" (any/try-scalar-string false)))
+  (is (= "" (any/try-scalar-string ""))))

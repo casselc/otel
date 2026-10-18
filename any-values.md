@@ -43,6 +43,14 @@ with the same octets compare as equal. Each octet must be an integer from 0 to
 
 ## Determinism and limits
 
+Exporters that need string-valued attribute maps may optionally call
+`otel.any-value/try-scalar-string-map`. On qualified Jolt runtimes it converts
+a bounded builtin string-key map of primitive values without repeating policy
+checks for every attribute. It returns `nil` for unsupported hosts, map shapes,
+values or changed policies: callers must then use their ordinary conversion,
+not drop the attributes. It does not replace attribute normalization or infer
+types. Applications generally do not need this helper.
+
 Map keys may be strings, keywords or symbols. They are converted to strings and
 sorted. If two source keys produce the same string, every conflicting entry is
 dropped; map traversal order never chooses a winner.

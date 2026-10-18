@@ -207,7 +207,7 @@
              (canonicalize* value options 0
                             {:nodes 0 :bytes 0 :truncated? false})]
          (assoc state :value value))
-       (catch :default error
+       (catch Throwable error
          (if (:otel.any-value/error (ex-data error))
            {:error (:reason (ex-data error))
             :details (dissoc (ex-data error) :otel.any-value/error :reason)}
@@ -262,3 +262,37 @@
              (identical? default-limits scalar-default-limits)
              (identical? string-bytes original-string-bytes))
     (quot (:max-bytes scalar-default-limits) 4)))
+
+(def ^:private scalar-map-min-int64 min-int64)
+(def ^:private scalar-map-max-int64 max-int64)
+
+(def ^:private scalar-string-map-converter
+  (delay
+    (try
+      ;; Optional host-specific implementation. Ordinary JVM/BB loading never
+      ;; requires jolt.scheme; unsupported runtimes simply retain scalar calls.
+      (require 'otel.any-value-native)
+      ((ns-resolve 'otel.any-value-native 'load-string-map-converter!)
+       [[#'try-scalar-string scalar-text-helper]
+        [#'canonicalize scalar-text-canonicalizer]
+        [#'default-limits scalar-default-limits]
+        [#'string-bytes original-string-bytes]
+        [#'min-int64 scalar-map-min-int64]
+        [#'max-int64 scalar-map-max-int64]]
+       (quot (:max-bytes scalar-default-limits) 4))
+      (catch Throwable _ (constantly nil)))))
+
+(defn try-scalar-string-map
+  "Return a bounded builtin map's scalar text values, or nil to decline.
+
+  This optional host optimization accepts string-key maps containing bounded
+  strings, Booleans and native fixnums only while the SDK's original scalar
+  helper, canonicalizer, limits, byte counter and Int64 bounds remain installed.
+  It preserves map kind/order, drops metadata like ordinary fresh conversion,
+  and never mutates input nodes or calls replacement helpers. Unsupported maps,
+  hosts, values and policies must use the caller's ordinary scalar conversion;
+  nil is not an invalid-value verdict. No canonicalization or capture API changes.
+  Private implementation roots and ordinary core behavior remain trusted; this
+  is not an atomic cross-thread redefinition lock."
+  [value]
+  (or (@scalar-string-map-converter value) nil))

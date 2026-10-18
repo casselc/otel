@@ -15,7 +15,11 @@
         org.clojure/tools.logging {:git/url "https://github.com/jolt-lang/logging"
                                    :git/sha "ec6747e55583118d881faf4ab41e68d7e587ce4c"}}
 
- :aliases {;; Models Samizdat's telemetry alias: its stock upstream coordinate
+ :aliases {:scalar-map-native-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "otel.scalar-string-map-test"]}
+
+           ;; Models Samizdat's telemetry alias: its stock upstream coordinate
            ;; is moved to the same URL and SHA as OTel's direct coordinate.
            ;; Jolt then emits one checkout/source provider, not two divergent
            ;; implementations of the jolt.http.* namespaces.

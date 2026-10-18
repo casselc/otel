@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add optional `otel.any-value/try-scalar-string-map` for bounded builtin
+  primitive maps on qualified Jolt runtimes. The SDK owns original-policy
+  checks; changed helpers, unsupported inputs or hosts decline to ordinary
+  scalar conversion. Preserve values, bounds, map order and input ownership.
+  Use portable Throwable catching in AnyValue normalization so its host
+  fallback can load on Babashka/JVM as well as Jolt.
+
 - Release the span batch worker's wait when a complete batch is queued, using
   the existing bounded wait slices without producer blocking or normal-use
   interrupts. Keep scheduled partial batches, serialized exports and ownership
