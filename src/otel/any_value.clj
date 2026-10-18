@@ -266,21 +266,23 @@
 (def ^:private scalar-map-min-int64 min-int64)
 (def ^:private scalar-map-max-int64 max-int64)
 
+(defn- load-scalar-string-map-converter []
+  (try
+    ;; Optional host-specific implementation. Ordinary JVM/BB loading never
+    ;; requires jolt.scheme; unsupported runtimes simply retain scalar calls.
+    (require 'otel.any-value-native)
+    ((ns-resolve 'otel.any-value-native 'load-string-map-converter!)
+     [[#'try-scalar-string scalar-text-helper]
+      [#'canonicalize scalar-text-canonicalizer]
+      [#'default-limits scalar-default-limits]
+      [#'string-bytes original-string-bytes]
+      [#'min-int64 scalar-map-min-int64]
+      [#'max-int64 scalar-map-max-int64]]
+     (quot (:max-bytes scalar-default-limits) 4))
+    (catch Throwable _ (constantly nil))))
+
 (def ^:private scalar-string-map-converter
-  (delay
-    (try
-      ;; Optional host-specific implementation. Ordinary JVM/BB loading never
-      ;; requires jolt.scheme; unsupported runtimes simply retain scalar calls.
-      (require 'otel.any-value-native)
-      ((ns-resolve 'otel.any-value-native 'load-string-map-converter!)
-       [[#'try-scalar-string scalar-text-helper]
-        [#'canonicalize scalar-text-canonicalizer]
-        [#'default-limits scalar-default-limits]
-        [#'string-bytes original-string-bytes]
-        [#'min-int64 scalar-map-min-int64]
-        [#'max-int64 scalar-map-max-int64]]
-       (quot (:max-bytes scalar-default-limits) 4))
-      (catch Throwable _ (constantly nil)))))
+  (delay (load-scalar-string-map-converter)))
 
 (defn try-scalar-string-map
   "Return a bounded builtin map's scalar text values, or nil to decline.
@@ -295,4 +297,6 @@
   Private implementation roots and ordinary core behavior remain trusted; this
   is not an atomic cross-thread redefinition lock."
   [value]
+  ;; The native kernel owns the live SDK-root checks supplied by this defining
+  ;; namespace; repeating them here would add a second policy boundary.
   (or (@scalar-string-map-converter value) nil))

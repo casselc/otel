@@ -17,6 +17,9 @@
          "(bitwise-bit-set? (procedure-arity-mask (top-level-value (car entry))) (cadr entry)))) "
          "'((make-pmap 2) (var-cell-deref 1) (jolt-fixnum->string 1))) "
          "(error 'scalar-string-map \"Unsupported runtime helpers\")) "
+         "(unless (and (>= (most-negative-fixnum) -9223372036854775808) "
+         "(<= (most-positive-fixnum) 9223372036854775807)) "
+         "(error 'scalar-string-map \"Native fixnums exceed Int64\")) "
          (slurp url) ")")
     (throw (ex-info "Missing native scalar-map resource" {}))))
 

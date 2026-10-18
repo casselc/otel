@@ -1,6 +1,9 @@
 ;; Policy anchors are supplied by their SDK owner, never captured in a consumer.
 ;; Admission and conversion contain no user callbacks. Unsupported structures
 ;; decline before allocating output or invoking any converter.
+;; SDK string-bytes charges exactly 4 * host character count, not actual UTF8
+;; bytes. Jolt count and Chez string-length both count the same codepoints.
+;; The loader separately fences the host's entire fixnum range within Int64.
 (lambda (bindings maximum)
   (define (same-policy?)
     (let loop ((i 0))

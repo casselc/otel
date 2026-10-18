@@ -3,6 +3,7 @@
   This gate fails rather than skips if the optional native capability is absent."
   (:require [clojure.test :refer [deftest is testing] :as t]
             [jolt.scheme :as scheme]
+            [otel.any-value-native :as native]
             [otel.any-value :as any]))
 
 (defn fixture [n]
@@ -66,6 +67,13 @@
         (is (= (scalar-oracle admitted) (any/try-scalar-string-map admitted)))
         (is (nil? (any/try-scalar-string-map declined)))))))
 
+(deftest malformed-optional-native-code-declines-without-losing-the-fallback
+  (with-redefs [native/converter-source "("]
+    (let [decline (@#'any/load-scalar-string-map-converter)]
+      (is (nil? (decline (fixture 16))))
+      (is (= "42" (any/try-scalar-string 42)))))
+  (is (some? (any/try-scalar-string-map (fixture 16)))))
+
 (defn -main [& _]
   ;; Force the lazy native loader under a PREINSTALLED replacement. Its anchors
   ;; must come from the SDK definition, not this later loading context.
@@ -76,5 +84,5 @@
   (assert (some? (any/try-scalar-string-map (fixture 16)))
           "native scalar-map capability must actually run in this explicit gate")
   (let [{:keys [test pass fail error]} (t/run-tests 'otel.scalar-string-map-test)]
-    (assert (and (>= test 4) (>= pass 60)))
+    (assert (and (>= test 5) (>= pass 66)))
     (System/exit (if (zero? (+ fail error)) 0 1))))
