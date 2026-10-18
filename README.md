@@ -294,7 +294,7 @@ omitted values use the library defaults. Omitting `:environment?` (or setting it
 to `true`) retains the standard environment-aware behavior. The option must be
 a boolean when present.
 
-### Independent span destinations
+### Span batching
 
 The span batch worker exports when a complete batch is ready, without waiting
 out the schedule delay. It checks readiness during its existing short wait
@@ -304,6 +304,8 @@ existing drain-all behavior, including its final partial batch. Ending a span
 never waits for exporter I/O. Batch size must be no larger than queue capacity;
 when configuring a smaller queue, also choose an appropriate
 `:max-export-batch-size`.
+
+### Independent span destinations
 
 One tracer provider can send the same canonical spans to several independently
 bounded destinations. `independent-batch-pipelines` composes the existing batch
