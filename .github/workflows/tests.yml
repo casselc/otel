@@ -53,3 +53,42 @@ jobs:
         run: jolt -Srepro -A:test -m hegel.install
       - name: Run aggregate tests
         run: jolt -Srepro -M:test -m otel.test-runner
+
+  native-scalar-map:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      JOLT_CACHE_DIR: ${{ github.workspace }}/.jolt-cache-v0.8.23
+      JOLT_GITLIBS_DIR: ${{ github.workspace }}/.jolt-gitlibs-v0.8.23
+      JOLT_VERSION: 0.8.23
+      JOLT_SOURCE_COMMIT: a0ac71c3f638fe55158bd01b4ecbb0dd3d7545e5
+      JOLT_INSTALLER_SHA256: 737e4f3198f7bb41094b7cb9dc95029ac142694a4d3a829d4dcf64d7676e8a70
+      JOLT_ARCHIVE_SHA256: 90031be43241e61d0788a2f1bbd3da56d8f4324ae9fa87271f9637b43a6071f2
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install checksum-pinned stock Jolt
+        shell: bash
+        run: |
+          set -euo pipefail
+          installer="$RUNNER_TEMP/install-jolt"
+          install_dir="$RUNNER_TEMP/jolt-bin"
+          curl -fsSL --retry 2 --retry-all-errors \
+            "https://raw.githubusercontent.com/jolt-lang/jolt/$JOLT_SOURCE_COMMIT/install" \
+            -o "$installer"
+          echo "$JOLT_INSTALLER_SHA256  $installer" | sha256sum -c -
+          bash "$installer" --dir "$install_dir" --version "$JOLT_VERSION" \
+            --checksum "$JOLT_ARCHIVE_SHA256"
+          echo "$install_dir" >> "$GITHUB_PATH"
+      - name: Assert stock Jolt provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(jolt --version)" = "jolt v$JOLT_VERSION"
+          jolt -Srepro -Sdescribe
+      - name: Require the real native scalar-map capability
+        run: jolt -Srepro -M:scalar-map-native-test
+      - name: Retain ordinary AnyValue semantics
+        run: jolt -Srepro -M:test -m otel.test-runner any-value

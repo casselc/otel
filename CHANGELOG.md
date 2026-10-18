@@ -8,6 +8,8 @@
   scalar conversion. Preserve values, bounds, map order and input ownership.
   Use portable Throwable catching in AnyValue normalization so its host
   fallback can load on Babashka/JVM as well as Jolt.
+  Qualify the real native capability separately on checksum-pinned stock Jolt
+  0.8.23 without changing the existing runtime floor or floor test lane.
 
 - Release the span batch worker's wait when a complete batch is queued, using
   the existing bounded wait slices without producer blocking or normal-use

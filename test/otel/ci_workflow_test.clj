@@ -44,6 +44,24 @@
                       "jolt -Srepro -M:test -m otel.test-runner")
        (not (str/includes? workflow "joltc"))))
 
+(defn- native-scalar-map-qualified? [toolchain workflow]
+  (and (workflow-matches-toolchain?
+         (assoc toolchain :jolt (:native-scalar-map toolchain)) workflow)
+       (str/includes? workflow "  native-scalar-map:")
+       (str/includes? workflow "jolt -Srepro -M:scalar-map-native-test")
+       (str/includes? workflow "jolt -Srepro -M:test -m otel.test-runner any-value")))
+
+(deftest native-scalar-map-has-an-independent-pinned-capability-gate
+  (let [toolchain (edn/read-string (slurp toolchain-path))
+        workflow (slurp workflow-path)]
+    (is (native-scalar-map-qualified? toolchain workflow))
+    (is (not (native-scalar-map-qualified?
+               (assoc-in toolchain [:native-scalar-map :linux-x86-64-archive-sha256]
+                         (apply str (repeat 64 "0"))) workflow)))
+    (is (not (native-scalar-map-qualified?
+               toolchain (str/replace workflow "jolt -Srepro -M:scalar-map-native-test"
+                                      "true"))))))
+
 (deftest hosted-workflow-is-pinned-and-reproducible
   (let [toolchain (edn/read-string (slurp toolchain-path))
         deps (edn/read-string (slurp deps-path))
