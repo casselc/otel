@@ -358,9 +358,6 @@
    [#'try-scalar-string-map original-try-scalar-string-map]
    [#'try-sorted-scalar-string-map original-try-sorted-scalar-string-map]])
 
-(defn- scalar-string-map-payload-roots-current? [bindings]
-  (every? (fn [[v original]] (identical? (deref v) original)) bindings))
-
 (defn- load-scalar-string-map-payload-cache [bindings max-insertions max-chars]
   (try
     (require 'otel.any-value-native)
@@ -368,37 +365,29 @@
      bindings max-insertions max-chars)
     (catch Throwable _ nil)))
 
-(defn- scalar-string-map-payload-weight
-  "Retained-character charge for one converted entry: its string key plus its
-  output only when the output is itself a String (Booleans/fixnums are not)."
-  [result]
-  (reduce (fn [total [k v]]
-            (+ total (count k) (if (string? v) (count v) 0)))
-          0
-          result))
-
 (defn scalar-string-map-payload-converter*
   "Internal: parameterized constructor for focused bound tests. See
   scalar-string-map-payload-converter for the public contract."
   [max-insertions max-chars]
   (let [bindings (scalar-string-map-payload-bindings)]
-    (when-let [{:keys [lookup store!]}
+    (when-let [{:keys [current? lookup store!]}
                (load-scalar-string-map-payload-cache
                 bindings max-insertions max-chars)]
       (fn [value]
-        (when (scalar-string-map-payload-roots-current? bindings)
+        (when (current?)
           (or (lookup value)
               (when-let [result (or (original-try-scalar-string-map value)
                                      (original-try-sorted-scalar-string-map
                                       value))]
-                (when (scalar-string-map-payload-roots-current? bindings)
-                  (store! value result
-                          (scalar-string-map-payload-weight result))))))))))
+                ;; Store rechecks all eight live anchors before/after acceptance.
+                ;; It charges admitted output without temporary map entries.
+                (store! value result))))))))
 
 (defn scalar-string-map-payload-converter
   "Return a fresh, caller-owned closure that converts the same bounded
   scalar-text map shapes try-scalar-string-map / try-sorted-scalar-string-map
-  admit, caching successful conversions by source map identity so a repeated
+  admit, caching successful conversions by immutable source-root identity
+  plus map kind/count/stock-operation identity so a repeated
   payload map need not be re-walked; or nil when the host/loader cannot
   supply the optional native cache (JVM/BB, or any native loader failure).
 
@@ -418,6 +407,10 @@
   the caller must fall back to its normal conversion path. This check runs
   before and after every admission/cache-match/conversion, not just once.
 
+  Input must remain stable during each call. The original converter bodies
+  and ordinary core/private runtime internals are trusted callback-free;
+  root identity alone does not certify a body changed by compiler weaving.
+  Such woven converter bodies require separate qualification before use.
   This closure is not safe for concurrent calls from multiple threads and
   promises no cross-thread atomic-redefinition lock. It does not change
   canonicalize's API, is never invoked by the original helpers, and is a

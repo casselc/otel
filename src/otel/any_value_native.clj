@@ -77,7 +77,7 @@
          ;; the source separately checks the actual accessor forms compile.
          "'((pvec-count 1) (pvec-nth! 2) (var-cell-deref 1) "
          "(make-pmap 2) (jolt-ref-get 2) (make-weak-eq-hashtable 0) "
-         "(hashtable-ref 3) (hashtable-set! 3))) "
+         "(hashtable-ref 3) (hashtable-set! 3) (pmap-fold-seq-order 3))) "
          "(error 'payload-scalar-string-map-cache \"Unsupported runtime helpers\")) "
          (slurp url) ")")
     (throw (ex-info "Missing native payload scalar-map cache resource" {}))))
@@ -91,10 +91,11 @@
 
 (defn load-scalar-string-map-payload-cache!
   "Internal: policy anchors and budget come from otel.any-value's defining
-  namespace. Returns a fresh {:lookup :store!} pair with independent cache
+  namespace. Returns fresh {:current? :lookup :store!} functions with independent cache
   state per call, or nil when the optional native capability is unavailable."
   [bindings max-insertions max-chars]
   (when-let [dispatch (@scalar-string-map-payload-cache-factory
                        bindings max-insertions max-chars)]
-    {:lookup (fn [value] (dispatch 0 value nil nil))
-     :store! (fn [value result weight] (dispatch 1 value result weight))}))
+    {:current? (fn [] (dispatch 2 nil nil nil))
+     :lookup (fn [value] (dispatch 0 value nil nil))
+     :store! (fn [value result] (dispatch 1 value result nil))}))

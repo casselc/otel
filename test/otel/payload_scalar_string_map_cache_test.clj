@@ -42,6 +42,30 @@
       (is (= (oracle m) (convert m)))
       (is (= 1 @calls) "a warm identity hit must not re-run the original converter"))))
 
+(deftest distinct-source-wrappers-may-share-only-immutable-contents
+  (let [same-root? (scheme/eval-string
+                     "(lambda (a b)
+                        (if (pmap? a) (eq? (pmap-root a) (pmap-root b))
+                            (eq? (jolt-ref-get a (keyword #f \"tree\"))
+                                 (jolt-ref-get b (keyword #f \"tree\")))))")
+        same-output-root? (scheme/eval-string
+                            "(lambda (a b) (eq? (pmap-root a) (pmap-root b)))")]
+    (doseq [m [(plain-fixture 16) (sorted-fixture 16)]]
+      (let [other (with-meta m {:different-wrapper true})
+            convert (any/scalar-string-map-payload-converter)
+            a (convert m) b (convert other)
+            changed (assoc other "key-0" "different-same-count")]
+        (is (not (identical? m other)))
+        (is (same-root? m other) "the test must exercise actual root sharing")
+        (is (not (identical? a b)))
+        (is (same-output-root? a b) "a shared source root must actually hit")
+        (is (= (oracle m) a b))
+        (is (nil? (meta b)))
+        (is (= (count m) (count changed)))
+        (is (not (same-root? m changed)))
+        (is (= (oracle changed) (convert changed)))
+        (is (not= a (convert changed)))))))
+
 (deftest plain-and-sorted-maps-match-existing-helper-order-type-and-metadata
   (let [convert (any/scalar-string-map-payload-converter)]
     (doseq [n [9 16 128]]

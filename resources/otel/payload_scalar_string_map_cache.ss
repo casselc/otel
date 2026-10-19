@@ -1,60 +1,66 @@
-;; Policy anchors are supplied by the defining SDK namespace; this module
-;; never samples them from caller input and does not reimplement HAMT/sorted
-;; -map structural conversion. It only attests the identity of an already
-;; -admitted source value, caches the already-converted result keyed by a
-;; weak reference to that identity, and hands back a FRESH make-pmap wrapper
-;; sharing the cached root on both the first success and any later hit.
-;; Admission/conversion itself stays owned by the original
-;; try-scalar-string-map / try-sorted-scalar-string-map helpers on every
-;; miss; this module never calls them and never invokes a table operation or
-;; comparator. The weak-eq table holds no strong reference to a source map's
-;; root/tree pointer once that pointer becomes otherwise unreachable, so a
-;; source map's own metadata is never retained through this cache.
+;; Payload-local weak root cache. Immutable source roots and ordinary runtime
+;; internals are trusted; source headers must be stable throughout each call.
+;; Admission stays in the defining SDK's original callback-free converters.
+;; Runtime-owned folding reads only their admitted immutable output. No source
+;; wrapper/metadata, comparator or caller operation is retained or invoked.
 (lambda (bindings max-insertions max-chars)
   (let ((tag (keyword "jolt" "type")) (sorted-tag (keyword "jolt" "sorted-map"))
         (ops-key (keyword #f "ops")) (tree-key (keyword #f "tree"))
         (count-key (keyword #f "cnt"))
         (table (make-weak-eq-hashtable))
+        (anchors (make-vector (* 2 (pvec-count bindings))))
         (insertions 0) (retained 0))
     (define (same-policy?)
       (let loop ((i 0))
-        (or (= i (pvec-count bindings))
-            (let ((entry (pvec-nth! bindings i)))
-              (and (eq? (var-cell-deref (pvec-nth! entry 0)) (pvec-nth! entry 1))
-                   (loop (+ i 1)))))))
-    ;; Returns (key . stamp) for a supported shape, or #f. Reads opaque
-    ;; identity fields only; never iterates entries or calls a table op.
-    (define (stamp-of m)
-      (cond
-        ((pmap? m) (cons (pmap-root m) (vector 'hamt (pmap-cnt m))))
-        ((and (htable? m) (eq? (jolt-ref-get m tag) sorted-tag))
-         (cons (jolt-ref-get m tree-key)
-               (vector 'sorted (jolt-ref-get m ops-key) (jolt-ref-get m count-key))))
-        (else #f)))
-    (define (stamp-matches? stamp live)
-      (case (vector-ref stamp 0)
-        ((hamt) (and (pmap? live) (eqv? (vector-ref stamp 1) (pmap-cnt live))))
-        ((sorted) (and (htable? live) (eq? (jolt-ref-get live tag) sorted-tag)
-                       (eq? (vector-ref stamp 1) (jolt-ref-get live ops-key))
-                       (eqv? (vector-ref stamp 2) (jolt-ref-get live count-key))))
-        (else #f)))
+        (or (= i (vector-length anchors))
+            (and (eq? (var-cell-deref (vector-ref anchors i))
+                      (vector-ref anchors (+ i 1)))
+                 (loop (+ i 2))))))
+    (define (fresh entry)
+      (and (same-policy?) (make-pmap (vector-ref entry 3) (vector-ref entry 4))))
+    ;; No cons/vector stamp allocation on either hits or ordinary misses.
     (define (lookup m)
       (and (same-policy?)
-           (let ((ks (stamp-of m)))
-             (and ks
-                  (let ((entry (hashtable-ref table (car ks) #f)))
-                    (and entry (stamp-matches? (vector-ref entry 0) m)
-                         (same-policy?)
-                         (make-pmap (vector-ref entry 1) (vector-ref entry 2))))))))
-    (define (store! m result weight)
+           (cond
+             ((pmap? m)
+              (let ((entry (hashtable-ref table (pmap-root m) #f)))
+                (and entry (eq? (vector-ref entry 0) 'hamt)
+                     (eqv? (vector-ref entry 2) (pmap-cnt m)) (fresh entry))))
+             ((and (htable? m) (eq? (jolt-ref-get m tag) sorted-tag))
+              (let ((entry (hashtable-ref table (jolt-ref-get m tree-key) #f)))
+                (and entry (eq? (vector-ref entry 0) 'sorted)
+                     (eq? (vector-ref entry 1) (jolt-ref-get m ops-key))
+                     (eqv? (vector-ref entry 2) (jolt-ref-get m count-key))
+                     (fresh entry))))
+             (else #f))))
+    (define (weight result)
+      (pmap-fold-seq-order result
+        (lambda (key value total)
+          (+ total (string-length key) (string-length value))) 0))
+    (define (store! m result)
       (and (same-policy?) (pmap? result)
-           (let ((ks (stamp-of m)))
-             (when (and ks (< insertions max-insertions)
-                        (<= (+ retained weight) max-chars))
-               (hashtable-set! table (car ks)
-                 (vector (cdr ks) (pmap-root result) (pmap-cnt result)))
-               (set! insertions (+ insertions 1))
-               (set! retained (+ retained weight)))
-             (and (same-policy?) (make-pmap (pmap-root result) (pmap-cnt result))))))
+           (begin
+             (when (< insertions max-insertions)
+               (let ((charge (weight result)))
+                 (when (<= (+ retained charge) max-chars)
+                   (cond
+                     ((pmap? m)
+                      (hashtable-set! table (pmap-root m)
+                        (vector 'hamt #f (pmap-cnt m) (pmap-root result) (pmap-cnt result))))
+                     ((and (htable? m) (eq? (jolt-ref-get m tag) sorted-tag))
+                      (hashtable-set! table (jolt-ref-get m tree-key)
+                        (vector 'sorted (jolt-ref-get m ops-key) (jolt-ref-get m count-key)
+                                (pmap-root result) (pmap-cnt result)))))
+                   (set! insertions (+ insertions 1))
+                   (set! retained (+ retained charge)))))
+             ;; Original helpers already return a fresh metadata-free wrapper.
+             ;; Store its root only; hits construct another fresh wrapper.
+             (and (same-policy?) result))))
+    ;; Decode immutable binding vectors once, but dereference every live cell
+    ;; on each check. This is not a startup-only policy snapshot.
+    (do ((i 0 (+ i 1))) ((= i (pvec-count bindings)))
+      (let ((entry (pvec-nth! bindings i)))
+        (vector-set! anchors (* i 2) (pvec-nth! entry 0))
+        (vector-set! anchors (+ (* i 2) 1) (pvec-nth! entry 1))))
     (lambda (mode a b c)
-      (if (eqv? mode 0) (lookup a) (store! a b c)))))
+      (case mode ((0) (lookup a)) ((1) (store! a b)) (else (same-policy?))))))
