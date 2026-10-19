@@ -59,3 +59,42 @@
   [bindings maximum prototype]
   (let [convert ((scheme/eval-string sorted-converter-source) bindings maximum prototype)]
     (fn [value] (convert value))))
+
+(defmacro ^:private payload-cache-source []
+  (if-let [url (io/resource "otel/payload_scalar_string_map_cache.ss")]
+    (str "(begin "
+         "(unless (and "
+         "(eq? (record-type-uid (record-type-descriptor pmap)) 'chez-pmap-v6) "
+         "(equal? (record-type-field-names (record-type-descriptor pmap)) '#(root cnt hasheq meta)) "
+         "(eq? (record-type-uid (record-type-descriptor htable)) 'chez-htable-v2) "
+         "(equal? (record-type-field-names (record-type-descriptor htable)) '#(h hc))) "
+         "(error 'payload-scalar-string-map-cache \"Unsupported map layout\")) "
+         "(unless (for-all (lambda (entry) "
+         "(and (top-level-bound? (car entry)) (procedure? (top-level-value (car entry))) "
+         "(bitwise-bit-set? (procedure-arity-mask (top-level-value (car entry))) (cadr entry)))) "
+         ;; Record predicates/accessors are lexical syntax, not top-level
+         ;; procedures. Their UID/field geometry is fenced above; evaluating
+         ;; the source separately checks the actual accessor forms compile.
+         "'((pvec-count 1) (pvec-nth! 2) (var-cell-deref 1) "
+         "(make-pmap 2) (jolt-ref-get 2) (make-weak-eq-hashtable 0) "
+         "(hashtable-ref 3) (hashtable-set! 3))) "
+         "(error 'payload-scalar-string-map-cache \"Unsupported runtime helpers\")) "
+         (slurp url) ")")
+    (throw (ex-info "Missing native payload scalar-map cache resource" {}))))
+
+(def ^:private payload-cache-converter-source (payload-cache-source))
+
+(def ^:private scalar-string-map-payload-cache-factory
+  (delay
+    (try (scheme/eval-string payload-cache-converter-source)
+         (catch Throwable _ (constantly nil)))))
+
+(defn load-scalar-string-map-payload-cache!
+  "Internal: policy anchors and budget come from otel.any-value's defining
+  namespace. Returns a fresh {:lookup :store!} pair with independent cache
+  state per call, or nil when the optional native capability is unavailable."
+  [bindings max-insertions max-chars]
+  (when-let [dispatch (@scalar-string-map-payload-cache-factory
+                       bindings max-insertions max-chars)]
+    {:lookup (fn [value] (dispatch 0 value nil nil))
+     :store! (fn [value result weight] (dispatch 1 value result weight))}))

@@ -301,6 +301,10 @@
   ;; namespace; repeating them here would add a second policy boundary.
   (or (@scalar-string-map-converter value) nil))
 
+;; Captured immediately after definition for the payload cache constructor's
+;; policy-root bundle; never sampled from caller input.
+(def ^:private original-try-scalar-string-map try-scalar-string-map)
+
 ;; Constructed in this defining namespace under the same trusted ordinary-core
 ;; assumption as the existing native helper; not sampled from caller input.
 (def ^:private scalar-sorted-map-prototype
@@ -337,3 +341,86 @@
   this is not a seal against their mutation or a cross-thread redefinition lock."
   [value]
   (or (@sorted-scalar-string-map-converter value) nil))
+
+;; Captured immediately after definition; see original-try-scalar-string-map.
+(def ^:private original-try-sorted-scalar-string-map try-sorted-scalar-string-map)
+
+(defn- scalar-string-map-payload-bindings
+  "The eight original policy anchors a payload cache must stay consistent
+  with: the six scalar-text anchors plus both map-converter identities."
+  []
+  [[#'try-scalar-string scalar-text-helper]
+   [#'canonicalize scalar-text-canonicalizer]
+   [#'default-limits scalar-default-limits]
+   [#'string-bytes original-string-bytes]
+   [#'min-int64 scalar-map-min-int64]
+   [#'max-int64 scalar-map-max-int64]
+   [#'try-scalar-string-map original-try-scalar-string-map]
+   [#'try-sorted-scalar-string-map original-try-sorted-scalar-string-map]])
+
+(defn- scalar-string-map-payload-roots-current? [bindings]
+  (every? (fn [[v original]] (identical? (deref v) original)) bindings))
+
+(defn- load-scalar-string-map-payload-cache [bindings max-insertions max-chars]
+  (try
+    (require 'otel.any-value-native)
+    ((ns-resolve 'otel.any-value-native 'load-scalar-string-map-payload-cache!)
+     bindings max-insertions max-chars)
+    (catch Throwable _ nil)))
+
+(defn- scalar-string-map-payload-weight
+  "Retained-character charge for one converted entry: its string key plus its
+  output only when the output is itself a String (Booleans/fixnums are not)."
+  [result]
+  (reduce (fn [total [k v]]
+            (+ total (count k) (if (string? v) (count v) 0)))
+          0
+          result))
+
+(defn scalar-string-map-payload-converter*
+  "Internal: parameterized constructor for focused bound tests. See
+  scalar-string-map-payload-converter for the public contract."
+  [max-insertions max-chars]
+  (let [bindings (scalar-string-map-payload-bindings)]
+    (when-let [{:keys [lookup store!]}
+               (load-scalar-string-map-payload-cache
+                bindings max-insertions max-chars)]
+      (fn [value]
+        (when (scalar-string-map-payload-roots-current? bindings)
+          (or (lookup value)
+              (when-let [result (or (original-try-scalar-string-map value)
+                                     (original-try-sorted-scalar-string-map
+                                      value))]
+                (when (scalar-string-map-payload-roots-current? bindings)
+                  (store! value result
+                          (scalar-string-map-payload-weight result))))))))))
+
+(defn scalar-string-map-payload-converter
+  "Return a fresh, caller-owned closure that converts the same bounded
+  scalar-text map shapes try-scalar-string-map / try-sorted-scalar-string-map
+  admit, caching successful conversions by source map identity so a repeated
+  payload map need not be re-walked; or nil when the host/loader cannot
+  supply the optional native cache (JVM/BB, or any native loader failure).
+
+  Each call returns a fresh plain pmap wrapper with nil metadata. A cache hit
+  shares the previously converted root behind a NEW wrapper; it is never the
+  same wrapper object across calls, and formatted Strings may be shared with
+  no identity promise. There is no global or cross-closure cache: the budget
+  (default 64 insertions, 65536 retained key-plus-output String characters)
+  is scoped to this one closure's lifetime and is monotonic, so it may
+  overestimate retained memory after garbage collection. A budget decline
+  still returns a correct, merely uncached, fresh conversion.
+
+  Declines (nil) whenever any of the SDK's eight original policy roots -
+  the scalar-text helper, canonicalizer, limits, byte counter, Int64 bounds,
+  and both map-converter identities - no longer match what this namespace
+  captured at definition time; the live replacement is never invoked, and
+  the caller must fall back to its normal conversion path. This check runs
+  before and after every admission/cache-match/conversion, not just once.
+
+  This closure is not safe for concurrent calls from multiple threads and
+  promises no cross-thread atomic-redefinition lock. It does not change
+  canonicalize's API, is never invoked by the original helpers, and is a
+  PROTOTYPE: constructing it is not authorization for product adoption."
+  []
+  (scalar-string-map-payload-converter* 64 65536))
