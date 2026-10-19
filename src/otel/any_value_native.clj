@@ -98,4 +98,5 @@
                        bindings max-insertions max-chars)]
     {:current? (fn [] (dispatch 2 nil nil nil))
      :lookup (fn [value] (dispatch 0 value nil nil))
-     :store! (fn [value result] (dispatch 1 value result nil))}))
+     ;; Chez's rejected `and` is #f; preserve the SDK's nil decline contract.
+     :store! (fn [value result] (or (dispatch 1 value result nil) nil))}))

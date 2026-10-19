@@ -123,6 +123,24 @@
     (is (= (oracle m) (convert m))
         "roots restored: the cache must resume ordinary reuse, not stay poisoned")))
 
+(deftest a-late-policy-change-declines-with-nil-not-native-false
+  ;; Simulate the change after an ordinary helper returns, before store accepts
+  ;; it. This uses a private test seam, not permission for woven/mutating input.
+  (let [convert (any/scalar-string-map-payload-converter)
+        m (plain-fixture 16) calls (atom 0)
+        real @#'any/original-try-scalar-string-map]
+    (with-redefs [any/canonicalize any/canonicalize
+                  any/original-try-scalar-string-map
+                  (fn [value]
+                    (let [result (real value)]
+                      (alter-var-root #'any/canonicalize
+                        (constantly (fn [& _] (swap! calls inc) :must-not-run)))
+                      result))]
+      (is (nil? (convert m)))
+      (is (zero? @calls)))
+    (is (= (oracle m) (convert m)))
+    (is (zero? @calls))))
+
 (deftest sorted-map-ops-and-cnt-mutation-miss-rather-than-stale-hit
   (let [convert (any/scalar-string-map-payload-converter)]
     (testing "an :ops swap misses the cache instead of replaying the primed value"
@@ -158,6 +176,19 @@
       (is (= (oracle m) (convert m)))
       (is (= (oracle m) (convert m)))
       (is (= 2 @calls) "a 1-char budget admits no entry, so every call recomputes"))))
+
+(deftest zero-insertion-budget-retains-correct-fresh-results
+  (let [convert (any/scalar-string-map-payload-converter* 0 65536)
+        m (plain-fixture 16) calls (atom 0)
+        real @#'any/original-try-scalar-string-map]
+    (with-redefs [any/original-try-scalar-string-map
+                  (fn [v] (swap! calls inc) (real v))]
+      (let [a (convert m) b (convert m)]
+        (is (= (oracle m) a b))
+        (is (not (identical? a b)))
+        (is (nil? (meta a)))
+        (is (nil? (meta b)))
+        (is (= 2 @calls))))))
 
 (deftest sorted-tree-replacement-cannot-replay-the-old-value
   (let [convert (any/scalar-string-map-payload-converter)

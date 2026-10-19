@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Prototype optional `otel.any-value/scalar-string-map-payload-converter` for
+  repeated scalar attributes within one serial payload. Keep reuse bounded,
+  return fresh metadata-free map wrappers, recheck the defining SDK policy,
+  and decline cleanly on unsupported hosts. This does not change normal capture
+  or enable an exporter mode. Compiler-woven converter bodies remain unqualified.
+
 - Add optional `otel.any-value/try-sorted-scalar-string-map` to normalize
   bounded stock sorted maps into fresh plain scalar-text maps. The SDK checks
   original policy roots, operation-table identity and node geometry before
