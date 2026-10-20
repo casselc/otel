@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Reuse normalized original AnyValue defaults and the existing scalar fast path
+  when callers pass those defaults explicitly, as the OTLP decoder does.
+  Avoid repeated option-map and normalization-state construction without changing
+  budgets, truncation, structured values, or redefined-default behavior.
+
 - Release the span batch worker's wait when a complete batch is queued, using
   the existing bounded wait slices without producer blocking or normal-use
   interrupts. Keep scheduled partial batches, serialized exports and ownership
