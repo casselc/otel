@@ -1,0 +1,112 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 761ad02..854c72a 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,10 @@
+ 
+ ## Unreleased
+ 
++- Classify OTLP AnyValue's seven fixed fields with a bounded scan rather than
++  a per-value lazy filter. Preserve field precedence, empty values, conflicting
++  field rejection, and the existing depth/node/byte validation.
++
+ - Reuse normalized original AnyValue defaults and the existing scalar fast path
+   when callers pass those defaults explicitly, as the OTLP decoder does.
+   Avoid repeated option-map and normalization-state construction without changing
+diff --git a/src/otel/otlp/any_value.clj b/src/otel/otlp/any_value.clj
+index ab7136a..829d4b7 100644
+--- a/src/otel/otlp/any_value.clj
++++ b/src/otel/otlp/any_value.clj
+@@ -148,6 +148,24 @@
+                            options (inc depth) nodes)))))
+      (sorted-map) (range (count values)))))
+ 
++(def ^:private wire-arms
++  [:stringValue :boolValue :intValue :doubleValue
++   :arrayValue :kvlistValue :bytesValue])
++
++(defn- only-arm [wire path]
++  ;; Visit all seven fields in the original order, even after detecting a
++  ;; conflict. Avoid a closure and lazy sequence for each decoded value.
++  (loop [index 0 chosen nil multiple? false]
++    (if (< index (count wire-arms))
++      (let [arm (nth wire-arms index)
++            found? (present? (field wire arm))]
++        (recur (inc index)
++               (if (and found? (nil? chosen)) arm chosen)
++               (or multiple? (and found? (some? chosen)))))
++      (if multiple?
++        (fail! path :multiple-arms "zero or one AnyValue field" wire)
++        chosen))))
++
+ (defn- decode* [wire path options depth nodes]
+   (when (> depth (:max-depth options))
+     (fail! path :depth-limit (:max-depth options) depth))
+@@ -155,15 +173,10 @@
+     (fail! path :node-limit (:max-nodes options) @nodes))
+   (when-not (map? wire)
+     (fail! path :wrong-type "AnyValue object" wire))
+-  (let [arms (filter #(present? (field wire %))
+-                     [:stringValue :boolValue :intValue :doubleValue
+-                      :arrayValue :kvlistValue :bytesValue])]
+-    (when (> (count arms) 1)
+-      (fail! path :multiple-arms "zero or one AnyValue field" wire))
+-    (if (empty? arms)
++  (let [arm (only-arm wire path)]
++    (if (nil? arm)
+       any/empty-value
+-      (let [arm (first arms)
+-            value (field wire arm)
++      (let [value (field wire arm)
+             arm-path (conj path (name arm))]
+         (case arm
+           :stringValue
+diff --git a/test/otel/any_value_test.clj b/test/otel/any_value_test.clj
+index 676aec2..3633ee8 100644
+--- a/test/otel/any_value_test.clj
++++ b/test/otel/any_value_test.clj
+@@ -122,6 +122,44 @@
+            (is (= 42 (:value (any/canonicalize 42 any/default-limits)))))
+          (is (pos? @calls))))))
+ 
++(defn- legacy-only-wire-arm [value path]
++  (let [arms (filter #(not= :otel.otlp.any-value/absent (#'wire/field value %))
++                     [:stringValue :boolValue :intValue :doubleValue
++                      :arrayValue :kvlistValue :bytesValue])]
++    (when (> (count arms) 1)
++      (#'wire/fail! path :multiple-arms "zero or one AnyValue field" value))
++    (first arms)))
++
++(deftest bounded-wire-arm-scan-matches-legacy-selection
++  (let [arms [:stringValue :boolValue :intValue :doubleValue
++              :arrayValue :kvlistValue :bytesValue]
++        values ["λ🚀" false "42" 1.25 {:values []} {:values []} "AQI="]]
++    (doseq [mask (range 128)
++            key-fn [identity name]
++            options [any/default-limits {:max-nodes 0} {:max-depth -1}
++                     {:max-bytes 0} {:value-length-limit 1}]]
++      (let [input (into {} (for [i (range 7) :when (bit-test mask i)]
++                             [(key-fn (nth arms i)) (nth values i)]))
++            actual (wire/decode input options)
++            expected (with-redefs-fn {#'wire/only-arm legacy-only-wire-arm}
++                       #(wire/decode input options))]
++        (is (same-result? expected actual))))
++    (doseq [input [{:boolValue false "boolValue" true}
++                   {:stringValue nil "stringValue" "fallback"}
++                   {:stringValue :otel.otlp.any-value/absent "stringValue" "fallback"}
++                   {:boolValue false :intValue nil}
++                   {:arrayValue {:values [{:boolValue false} {:intValue "7"}]}}
++                   {:arrayValue {:values [{:boolValue false :stringValue "bad"}]}}]]
++      (is (same-result? (with-redefs-fn {#'wire/only-arm legacy-only-wire-arm}
++                         #(wire/decode input))
++                       (wire/decode input))))))
++
++(deftest wire-arm-selection-does-not-build-a-filter-sequence
++  (let [result (with-redefs [clojure.core/filter
++                           (fn [& _] (throw (ex-info "unexpected lazy arm filter" {})))]
++                 (wire/decode {:boolValue false}))]
++    (is (= {:value false} result))))
++
+ (deftest byte-strings-have-immutable-value-semantics
+   (let [left (any/bytes [0 1 254 255])
+         right (any/bytes '(0 1 254 255))]
