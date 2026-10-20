@@ -122,6 +122,44 @@
            (is (= 42 (:value (any/canonicalize 42 any/default-limits)))))
          (is (pos? @calls))))))
 
+(defn- legacy-only-wire-arm [value path]
+  (let [arms (filter #(not= :otel.otlp.any-value/absent (#'wire/field value %))
+                     [:stringValue :boolValue :intValue :doubleValue
+                      :arrayValue :kvlistValue :bytesValue])]
+    (when (> (count arms) 1)
+      (#'wire/fail! path :multiple-arms "zero or one AnyValue field" value))
+    (first arms)))
+
+(deftest bounded-wire-arm-scan-matches-legacy-selection
+  (let [arms [:stringValue :boolValue :intValue :doubleValue
+              :arrayValue :kvlistValue :bytesValue]
+        values ["λ🚀" false "42" 1.25 {:values []} {:values []} "AQI="]]
+    (doseq [mask (range 128)
+            key-fn [identity name]
+            options [any/default-limits {:max-nodes 0} {:max-depth -1}
+                     {:max-bytes 0} {:value-length-limit 1}]]
+      (let [input (into {} (for [i (range 7) :when (bit-test mask i)]
+                             [(key-fn (nth arms i)) (nth values i)]))
+            actual (wire/decode input options)
+            expected (with-redefs-fn {#'wire/only-arm legacy-only-wire-arm}
+                       #(wire/decode input options))]
+        (is (same-result? expected actual))))
+    (doseq [input [{:boolValue false "boolValue" true}
+                   {:stringValue nil "stringValue" "fallback"}
+                   {:stringValue :otel.otlp.any-value/absent "stringValue" "fallback"}
+                   {:boolValue false :intValue nil}
+                   {:arrayValue {:values [{:boolValue false} {:intValue "7"}]}}
+                   {:arrayValue {:values [{:boolValue false :stringValue "bad"}]}}]]
+      (is (same-result? (with-redefs-fn {#'wire/only-arm legacy-only-wire-arm}
+                         #(wire/decode input))
+                       (wire/decode input))))))
+
+(deftest wire-arm-selection-does-not-build-a-filter-sequence
+  (let [result (with-redefs [clojure.core/filter
+                           (fn [& _] (throw (ex-info "unexpected lazy arm filter" {})))]
+                 (wire/decode {:boolValue false}))]
+    (is (= {:value false} result))))
+
 (deftest byte-strings-have-immutable-value-semantics
   (let [left (any/bytes [0 1 254 255])
         right (any/bytes '(0 1 254 255))]

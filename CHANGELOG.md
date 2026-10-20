@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Compose the reviewed fixed-field OTLP AnyValue scan from PR #66 with this
+  consumer SDK stack. Avoid per-value lazy classification while retaining
+  field precedence, conflicting-field rejection and existing validation.
+
 - Reuse normalized original AnyValue defaults and the existing scalar fast path
   for explicit-default calls, including OTLP decoding. Preserve generic budget
   handling, structured values and tagged-error containment. This is the measured
