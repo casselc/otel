@@ -15,7 +15,10 @@
         org.clojure/tools.logging {:git/url "https://github.com/jolt-lang/logging"
                                    :git/sha "ec6747e55583118d881faf4ab41e68d7e587ce4c"}}
 
- :aliases {:sorted-scalar-map-native-test
+ :aliases {:stock-payload-cache-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "otel.stock-payload-cache-folder-test"]}
+           :sorted-scalar-map-native-test
            {:extra-paths ["test"]
             :main-opts ["-m" "otel.sorted-scalar-string-map-test"]}
            :scalar-map-native-test

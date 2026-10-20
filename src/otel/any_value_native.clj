@@ -77,8 +77,11 @@
          ;; the source separately checks the actual accessor forms compile.
          "'((pvec-count 1) (pvec-nth! 2) (var-cell-deref 1) "
          "(make-pmap 2) (jolt-ref-get 2) (make-weak-eq-hashtable 0) "
-         "(hashtable-ref 3) (hashtable-set! 3) (pmap-fold-seq-order 3))) "
+         "(hashtable-ref 3) (hashtable-set! 3))) "
          "(error 'payload-scalar-string-map-cache \"Unsupported runtime helpers\")) "
+         "(unless (and (procedure? pmap-fold-seq-order) "
+         "(bitwise-bit-set? (procedure-arity-mask pmap-fold-seq-order) 3)) "
+         "(error 'payload-scalar-string-map-cache \"Unsupported map traversal\")) "
          (slurp url) ")")
     (throw (ex-info "Missing native payload scalar-map cache resource" {}))))
 
@@ -89,14 +92,26 @@
     (try (scheme/eval-string payload-cache-converter-source)
          (catch Throwable _ (constantly nil)))))
 
+(def ^:private scalar-string-map-payload-cache-injector
+  ;; Compile once, not once per payload. Applying the loader captures only the
+  ;; supplied folder; each factory call still allocates independent cache state.
+  (delay (scheme/eval-string
+           (str "(lambda (pmap-fold-seq-order) " payload-cache-converter-source ")"))))
+
 (defn load-scalar-string-map-payload-cache!
   "Internal: policy anchors and budget come from otel.any-value's defining
   namespace. Returns fresh {:current? :lookup :store!} functions with independent cache
-  state per call, or nil when the optional native capability is unavailable."
-  [bindings max-insertions max-chars]
-  (when-let [dispatch (@scalar-string-map-payload-cache-factory
-                       bindings max-insertions max-chars)]
-    {:current? (fn [] (dispatch 2 nil nil nil))
-     :lookup (fn [value] (dispatch 0 value nil nil))
-     ;; Chez's rejected `and` is #f; preserve the SDK's nil decline contract.
-     :store! (fn [value result] (or (dispatch 1 value result nil) nil))}))
+  state per call, or nil when the optional native capability is unavailable.
+  Optional folder is a trusted synchronous (map visitor initial) full fold;
+  visitor receives (key value accumulator), with no mutation or retained loan."
+  ([bindings max-insertions max-chars]
+   (load-scalar-string-map-payload-cache! bindings max-insertions max-chars nil))
+  ([bindings max-insertions max-chars folder]
+   (let [factory (if folder
+                   (@scalar-string-map-payload-cache-injector folder)
+                   @scalar-string-map-payload-cache-factory)]
+     (when-let [dispatch (factory bindings max-insertions max-chars)]
+       {:current? (fn [] (dispatch 2 nil nil nil))
+        :lookup (fn [value] (dispatch 0 value nil nil))
+        ;; Chez's rejected `and` is #f; preserve the SDK's nil decline contract.
+        :store! (fn [value result] (or (dispatch 1 value result nil) nil))}))))

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Allow the optional payload scalar-map cache to receive a trusted native map
+  folder, avoiding a dependency on compiler-global traversal helpers. Existing
+  arities, policy-root checks, per-payload budgets and unsupported-host fallback
+  remain unchanged. No cache or exporter mode is enabled by default.
+
 - Prototype optional `otel.any-value/scalar-string-map-payload-converter` for
   repeated scalar attributes within one serial payload. Keep reuse bounded,
   return fresh metadata-free map wrappers, recheck the defining SDK policy,

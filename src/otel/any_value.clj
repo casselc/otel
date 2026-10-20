@@ -358,21 +358,23 @@
    [#'try-scalar-string-map original-try-scalar-string-map]
    [#'try-sorted-scalar-string-map original-try-sorted-scalar-string-map]])
 
-(defn- load-scalar-string-map-payload-cache [bindings max-insertions max-chars]
+(defn- load-scalar-string-map-payload-cache [bindings max-insertions max-chars folder]
   (try
     (require 'otel.any-value-native)
     ((ns-resolve 'otel.any-value-native 'load-scalar-string-map-payload-cache!)
-     bindings max-insertions max-chars)
+     bindings max-insertions max-chars folder)
     (catch Throwable _ nil)))
 
 (defn scalar-string-map-payload-converter*
   "Internal: parameterized constructor for focused bound tests. See
   scalar-string-map-payload-converter for the public contract."
-  [max-insertions max-chars]
-  (let [bindings (scalar-string-map-payload-bindings)]
+  ([max-insertions max-chars]
+   (scalar-string-map-payload-converter* max-insertions max-chars nil))
+  ([max-insertions max-chars folder]
+   (let [bindings (scalar-string-map-payload-bindings)]
     (when-let [{:keys [current? lookup store!]}
                (load-scalar-string-map-payload-cache
-                bindings max-insertions max-chars)]
+                bindings max-insertions max-chars folder)]
       (fn [value]
         (when (current?)
           (or (lookup value)
@@ -381,7 +383,7 @@
                                       value))]
                 ;; Store rechecks all eight live anchors before/after acceptance.
                 ;; It charges admitted output without temporary map entries.
-                (store! value result))))))))
+                (store! value result)))))))))
 
 (defn scalar-string-map-payload-converter
   "Return a fresh, caller-owned closure that converts the same bounded
@@ -414,6 +416,12 @@
   This closure is not safe for concurrent calls from multiple threads and
   promises no cross-thread atomic-redefinition lock. It does not change
   canonicalize's API, is never invoked by the original helpers, and is a
-  PROTOTYPE: constructing it is not authorization for product adoption."
-  []
-  (scalar-string-map-payload-converter* 64 65536))
+  PROTOTYPE: constructing it is not authorization for product adoption.
+
+  Optional folder supplies native traversal without installing global helpers.
+  It is a trusted synchronous (map visitor initial) full fold; visitor receives
+  (key value accumulator). It must visit every entry once without mutation or
+  retaining a loan. This is not validation of arbitrary third-party callbacks.
+  Unsupported hosts/loaders still decline; existing no-argument use is unchanged."
+  ([] (scalar-string-map-payload-converter* 64 65536))
+  ([folder] (scalar-string-map-payload-converter* 64 65536 folder)))
