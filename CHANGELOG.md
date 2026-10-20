@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Classify OTLP AnyValue's seven fixed fields with a bounded scan rather than
+  a per-value lazy filter. Preserve field precedence, empty values, conflicting
+  field rejection, and the existing depth/node/byte validation.
+
 - Reuse normalized original AnyValue defaults and the existing scalar fast path
   when callers pass those defaults explicitly, as the OTLP decoder does.
   Avoid repeated option-map and normalization-state construction without changing

@@ -148,6 +148,24 @@
                            options (inc depth) nodes)))))
      (sorted-map) (range (count values)))))
 
+(def ^:private wire-arms
+  [:stringValue :boolValue :intValue :doubleValue
+   :arrayValue :kvlistValue :bytesValue])
+
+(defn- only-arm [wire path]
+  ;; Visit all seven fields in the original order, even after detecting a
+  ;; conflict. Avoid a closure and lazy sequence for each decoded value.
+  (loop [index 0 chosen nil multiple? false]
+    (if (< index (count wire-arms))
+      (let [arm (nth wire-arms index)
+            found? (present? (field wire arm))]
+        (recur (inc index)
+               (if (and found? (nil? chosen)) arm chosen)
+               (or multiple? (and found? (some? chosen)))))
+      (if multiple?
+        (fail! path :multiple-arms "zero or one AnyValue field" wire)
+        chosen))))
+
 (defn- decode* [wire path options depth nodes]
   (when (> depth (:max-depth options))
     (fail! path :depth-limit (:max-depth options) depth))
@@ -155,15 +173,10 @@
     (fail! path :node-limit (:max-nodes options) @nodes))
   (when-not (map? wire)
     (fail! path :wrong-type "AnyValue object" wire))
-  (let [arms (filter #(present? (field wire %))
-                     [:stringValue :boolValue :intValue :doubleValue
-                      :arrayValue :kvlistValue :bytesValue])]
-    (when (> (count arms) 1)
-      (fail! path :multiple-arms "zero or one AnyValue field" wire))
-    (if (empty? arms)
+  (let [arm (only-arm wire path)]
+    (if (nil? arm)
       any/empty-value
-      (let [arm (first arms)
-            value (field wire arm)
+      (let [value (field wire arm)
             arm-path (conj path (name arm))]
         (case arm
           :stringValue
