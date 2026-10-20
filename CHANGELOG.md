@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Reuse normalized original AnyValue defaults and the existing scalar fast path
+  for explicit-default calls, including OTLP decoding. Preserve generic budget
+  handling, structured values and tagged-error containment. This is the measured
+  pinned-consumer counterpart of the independent main fix in PR #65.
+
 - Allow the optional payload scalar-map cache to receive a trusted native map
   folder, avoiding a dependency on compiler-global traversal helpers. Existing
   arities, policy-root checks, per-payload budgets and unsupported-host fallback

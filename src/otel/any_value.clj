@@ -43,15 +43,22 @@
    :max-bytes (* 1024 1024)
    :value-length-limit nil})
 
+;; Immutable original defaults are already a complete normalized option map.
+;; Keep identity guards so redefined defaults and caller maps use normal merging.
+(def ^:private scalar-default-limits default-limits)
+
 (defn limits [options]
-  (let [{:keys [max-depth max-nodes max-bytes value-length-limit]} options]
-    (merge default-limits
-           (cond-> {}
-             (some? max-depth) (assoc :max-depth max-depth)
-             (some? max-nodes) (assoc :max-nodes max-nodes)
-             (some? max-bytes) (assoc :max-bytes max-bytes)
-             (some? value-length-limit)
-             (assoc :value-length-limit value-length-limit)))))
+  (if (and (identical? default-limits scalar-default-limits)
+           (identical? options scalar-default-limits))
+    scalar-default-limits
+    (let [{:keys [max-depth max-nodes max-bytes value-length-limit]} options]
+      (merge default-limits
+             (cond-> {}
+               (some? max-depth) (assoc :max-depth max-depth)
+               (some? max-nodes) (assoc :max-nodes max-nodes)
+               (some? max-bytes) (assoc :max-bytes max-bytes)
+               (some? value-length-limit)
+               (assoc :value-length-limit value-length-limit))))))
 
 (defn- fail! [reason data]
   (throw (ex-info "invalid OpenTelemetry AnyValue"
@@ -174,7 +181,6 @@
 
 ;; Identity guards the shortcut's fixed budget assumptions. Replacing defaults
 ;; (even with an equal map) conservatively restores the generic options path.
-(def ^:private scalar-default-limits default-limits)
 
 (defn- default-scalar-result [value]
   (cond
@@ -203,10 +209,13 @@
   ([value options]
    (let [options (limits options)]
      (try
-       (let [[value state]
-             (canonicalize* value options 0
-                            {:nodes 0 :bytes 0 :truncated? false})]
-         (assoc state :value value))
+       (or (when (and (identical? default-limits scalar-default-limits)
+                      (identical? options scalar-default-limits))
+             (default-scalar-result value))
+           (let [[value state]
+                 (canonicalize* value options 0
+                                {:nodes 0 :bytes 0 :truncated? false})]
+             (assoc state :value value)))
        (catch Throwable error
          (if (:otel.any-value/error (ex-data error))
            {:error (:reason (ex-data error))
