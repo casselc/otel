@@ -374,6 +374,14 @@
      bindings max-insertions max-chars folder)
     (catch Throwable _ nil)))
 
+(defn- load-scalar-text-planner [factory bindings max-shapes max-key-chars]
+  (try
+    (require 'otel.any-value-native)
+    ((ns-resolve 'otel.any-value-native 'load-scalar-text-planner!)
+     factory bindings (quot (:max-bytes scalar-default-limits) 4)
+     scalar-sorted-map-prototype max-shapes max-key-chars)
+    (catch Throwable _ nil)))
+
 (defn scalar-string-map-payload-converter*
   "Internal: parameterized constructor for focused bound tests. See
   scalar-string-map-payload-converter for the public contract."
@@ -392,7 +400,36 @@
                                       value))]
                 ;; Store rechecks all eight live anchors before/after acceptance.
                 ;; It charges admitted output without temporary map entries.
-                (store! value result)))))))))
+                (store! value result))))))))
+  ([max-insertions max-chars folder options]
+   (if (nil? options)
+     (scalar-string-map-payload-converter* max-insertions max-chars folder)
+     (let [{:keys [shape-plan-factory max-shapes max-shape-key-chars]
+            :or {max-shapes 8 max-shape-key-chars 8192}} options]
+       (when-not (and (map? options)
+                      (every? #{:shape-plan-factory :max-shapes :max-shape-key-chars} (keys options))
+                      (ifn? shape-plan-factory)
+                      (integer? max-shapes) (<= 0 max-shapes 8)
+                      (integer? max-shape-key-chars) (<= 0 max-shape-key-chars 8192))
+         (throw (ex-info "Invalid scalar-text shape-plan options" {:type ::invalid-shape-plans})))
+       (let [bindings (scalar-string-map-payload-bindings)]
+         (when-let [{:keys [current? lookup store!]}
+                    (load-scalar-string-map-payload-cache bindings max-insertions max-chars folder)]
+           (when-let [{shape-lookup :lookup learn! :learn!}
+                      (load-scalar-text-planner shape-plan-factory bindings max-shapes max-shape-key-chars)]
+             (fn [value]
+               (when (current?)
+                 (or (lookup value)
+                     (when-let [result
+                                (or (original-try-scalar-string-map value)
+                                    (shape-lookup value)
+                                    (when-let [converted (original-try-sorted-scalar-string-map value)]
+                                      ;; Learn only after original SDK admission.
+                                      ;; Library independently validates; no new
+                                      ;; input-value cache or consumer policy roots.
+                                      (learn! value)
+                                      converted))]
+                       (store! value result))))))))))))
 
 (defn scalar-string-map-payload-converter
   "Return a fresh, caller-owned closure that converts the same bounded
@@ -431,6 +468,24 @@
   It is a trusted synchronous (map visitor initial) full fold; visitor receives
   (key value accumulator). It must visit every entry once without mutation or
   retaining a loan. This is not validation of arbitrary third-party callbacks.
-  Unsupported hosts/loaders still decline; existing no-argument use is unchanged."
+  Unsupported hosts/loaders still decline; existing no-argument use is unchanged.
+
+  The optional second argument enables bounded inferred key-shape plans through
+  {:shape-plan-factory trusted-native-factory}. The SDK supplies its original
+  policy anchors, limits and trusted prototype; applications never provide those
+  private roots. Learn only after original sorted-map admission. Existing source
+  root hits run first, plain maps retain their original path, and every result
+  still goes through SDK store admission/policy checks. Unknown shapes/values
+  retain the original fallback. No compiler/global JSON hook is installed.
+  Additional per-closure retention is at most :max-shapes (default/max 8) key
+  schemas / :max-shape-key-chars (default/max 8192) String characters, at most128
+  keys per schema plus bounded template overhead. No input wrappers/trees or
+  telemetry values are retained by plans. These bounds are not a hard RSS cap.
+  A full schema budget leaves conversion correct but uses the old path for new
+  shapes. Factory bodies/ordinary core and immutable String keys are trusted,
+  like the injected folder. This is not validation of arbitrary callbacks.
+  Invalid options throw; unavailable host/factory returns nil at construction.
+  No-options arities do not load or invoke any shape factory."
   ([] (scalar-string-map-payload-converter* 64 65536))
-  ([folder] (scalar-string-map-payload-converter* 64 65536 folder)))
+  ([folder] (scalar-string-map-payload-converter* 64 65536 folder))
+  ([folder options] (scalar-string-map-payload-converter* 64 65536 folder options)))

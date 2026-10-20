@@ -18,6 +18,14 @@
  :aliases {:stock-payload-cache-test
            {:extra-paths ["test"]
             :main-opts ["-m" "otel.stock-payload-cache-folder-test"]}
+           :stock-shape-plans-test
+           {:extra-paths ["test"]
+            :extra-deps
+            {io.github.chucklehead-dev/jolt-codec
+             {:git/url "https://github.com/chucklehead-dev/jolt-otel-clickhouse.git"
+              :git/sha "6288a7ccd04087f01061275367f7dabffd39cdba"
+              :deps/root "incubator/codec"}}
+            :main-opts ["-m" "otel.payload-scalar-shape-plan-test"]}
            :sorted-scalar-map-native-test
            {:extra-paths ["test"]
             :main-opts ["-m" "otel.sorted-scalar-string-map-test"]}

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add opt-in bounded scalar attribute key-shape plans to the payload converter.
+  A trusted independent native factory can reuse key/hash geometry for distinct
+  sorted maps with the same fields, without per-map hashing or manual schemas.
+  The SDK supplies original policy/limits, keeps existing root-cache admission,
+  and bounds extra key-only retention per payload. Existing arities, capture,
+  default behavior and unsupported-input fallbacks remain unchanged.
+
 - Compose the reviewed fixed-field OTLP AnyValue scan from PR #66 with this
   consumer SDK stack. Avoid per-value lazy classification while retaining
   field precedence, conflicting-field rejection and existing validation.

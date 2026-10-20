@@ -115,3 +115,13 @@
         :lookup (fn [value] (dispatch 0 value nil nil))
         ;; Chez's rejected `and` is #f; preserve the SDK's nil decline contract.
         :store! (fn [value result] (or (dispatch 1 value result nil) nil))}))))
+
+(defn load-scalar-text-planner!
+  "Internal trusted library factory bridge. Defining SDK supplies ORIGINAL
+  policy roots, limits, prototype and retention bounds, not application Vars.
+  No global registration, runtime helper patch or SDK dependency on the codec."
+  [factory bindings maximum prototype max-shapes max-key-chars]
+  (let [dispatch (factory bindings maximum prototype max-shapes max-key-chars)]
+    (when (ifn? dispatch)
+      {:lookup (fn [value] (or (dispatch 0 value) nil))
+       :learn! (fn [value] (or (dispatch 1 value) nil))})))
