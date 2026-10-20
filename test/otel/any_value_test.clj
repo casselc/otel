@@ -81,6 +81,47 @@
     (is (= (any/canonicalize value any/default-limits)
            (any/canonicalize value)))))
 
+(deftest explicit-default-scalars-match-a-forced-generic-oracle
+  (let [original any/default-limits
+        fresh-defaults (into (sorted-map) original)]
+    (is (= original fresh-defaults))
+    (is (not (identical? original fresh-defaults)))
+    (doseq [value ["" "λ🚀" true false 0 -1 9007199254740993
+                   any/min-int64 any/max-int64 (inc any/max-int64)
+                   nil 1.25 ##Inf ##-Inf ##NaN any/empty-value
+                   (any/bytes [0 255]) [1 "two" false] {:a [false "λ🚀"]}]
+            options [original {:max-bytes 0} {:max-nodes 0}
+                     {:max-depth -1} {:value-length-limit 1}]]
+      (let [candidate (any/canonicalize value options)
+            generic (with-redefs [any/default-limits fresh-defaults]
+                      (any/canonicalize value options))]
+        (is (same-result? candidate generic))))))
+
+(deftest explicit-default-path-keeps-known-policy-errors-nonthrowing
+  (with-redefs-fn {#'any/string-bytes
+                   (fn [_] (throw (ex-info "policy sentinel"
+                                          {:otel.any-value/error true
+                                           :reason :byte-limit :maximum 0})))}
+    #(is (= {:error :byte-limit :details {:maximum 0}}
+            (any/canonicalize "text" any/default-limits)))))
+
+(deftest explicit-default-scalars-avoid-generic-walk-only-for-original-policy
+  (let [walk #'any/canonicalize*
+        original @walk
+        calls (atom 0)]
+    (is (identical? any/default-limits (any/limits any/default-limits)))
+    (with-redefs-fn {walk (fn [& args] (swap! calls inc) (apply original args))}
+      #(do
+         (doseq [value ["text" true false 42]]
+           (is (contains? (any/canonicalize value any/default-limits) :value)))
+         (is (zero? @calls))
+         (is (= [42] (:value (any/canonicalize [42] any/default-limits))))
+         (is (pos? @calls))
+         (reset! calls 0)
+         (with-redefs [any/default-limits (into (sorted-map) any/default-limits)]
+           (is (= 42 (:value (any/canonicalize 42 any/default-limits)))))
+         (is (pos? @calls))))))
+
 (deftest byte-strings-have-immutable-value-semantics
   (let [left (any/bytes [0 1 254 255])
         right (any/bytes '(0 1 254 255))]
