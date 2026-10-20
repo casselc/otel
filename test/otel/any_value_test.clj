@@ -105,6 +105,23 @@
     #(is (= {:error :byte-limit :details {:maximum 0}}
             (any/canonicalize "text" any/default-limits)))))
 
+(deftest explicit-default-scalars-avoid-generic-walk-only-for-original-policy
+  (let [walk #'any/canonicalize*
+        original @walk
+        calls (atom 0)]
+    (is (identical? any/default-limits (any/limits any/default-limits)))
+    (with-redefs-fn {walk (fn [& args] (swap! calls inc) (apply original args))}
+      #(do
+         (doseq [value ["text" true false 42]]
+           (is (contains? (any/canonicalize value any/default-limits) :value)))
+         (is (zero? @calls))
+         (is (= [42] (:value (any/canonicalize [42] any/default-limits))))
+         (is (pos? @calls))
+         (reset! calls 0)
+         (with-redefs [any/default-limits (into (sorted-map) any/default-limits)]
+           (is (= 42 (:value (any/canonicalize 42 any/default-limits)))))
+         (is (pos? @calls))))))
+
 (deftest byte-strings-have-immutable-value-semantics
   (let [left (any/bytes [0 1 254 255])
         right (any/bytes '(0 1 254 255))]
