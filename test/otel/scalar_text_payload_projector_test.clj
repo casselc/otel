@@ -13,7 +13,7 @@
 (defn fixture [] (existing/sorted-fixture 17))
 (defn encoded [value] (codec/write-nested (codec/open-codec) value))
 
-(deftest original-root-hits-and-plain-maps-win-before-opaque-views
+(deftest original-root-hits-win-and-hamt-learning-follows-original-admission
   (let [ops (atom []) native (factory)
         project (any/scalar-text-payload-projector @folder
                   {:shape-plan-factory (fn [& args]
@@ -28,9 +28,15 @@
     (let [view (project distinct)]
       (is (not (map? view)))
       (is (= (encoded first-result) (encoded view))))
-    (let [plain (existing/plain-fixture 17) before @ops]
+    (let [plain (existing/plain-fixture 17) before (count @ops)]
       (is (= (existing/oracle plain) (project plain)))
-      (is (= before @ops) "plain-map admission wins before the learned plan"))))
+      (is (= [0 1] (subvec @ops before)) "unknown HAMT checks then learns after admission")
+      (let [before @ops]
+        (is (map? (project plain)))
+        (is (= before @ops) "existing root cache still wins"))
+      (let [distinct (into {} plain) view (project distinct)]
+        (is view) (is (not (map? view)))
+        (is (= (encoded (existing/oracle plain)) (encoded view)))))))
 
 (deftest all-eight-policy-anchors-still-fence-every-representation
   (let [project (projector) m (fixture)]
@@ -47,8 +53,11 @@
         old (any/scalar-string-map-payload-converter @folder
               {:shape-plan-factory (shapes/native-plan-factory)})]
     (is (map? (project m)))
-    (doseq [bad [nil (assoc m "key-0" nil) (assoc m "key-0" [1])
-                (assoc m "key-0" 1.25) (assoc m "key-0" 9223372036854775807)
+    (doseq [bad [nil
+                (assoc m "key-0" nil)
+                (assoc m "key-0" [1])
+                (assoc m "key-0" 1.25)
+                (assoc m "key-0" 9223372036854775807)
                 (existing/sorted-fixture 129)]]
       (is (nil? (project bad))))
     (dotimes [_ 3]
@@ -74,6 +83,35 @@
   (doseq [f [(fn [& _] nil) (fn [& _] 42) (fn [& _] (throw (ex-info "private detail" {})))]]
     (is (nil? (any/scalar-text-payload-projector @folder {:shape-plan-factory f}))))
   (is (nil? (any/scalar-text-payload-projector nil {:shape-plan-factory (factory)}))))
+
+(deftest learned-hamt-views-retain-all-policy-fences-and-original-fallback
+  (let [project (projector) m (existing/plain-fixture 17)]
+    (is (map? (project m)))
+    (let [view (project (into {} m))]
+      (is view) (is (not (map? view))))
+    (doseq [root existing/eight-roots]
+      (with-redefs-fn {root (Object.)}
+        #(do (is (nil? (project m))) (is (nil? (project (into {} m)))))))
+    (doseq [bad [(assoc m "key-0" nil) (assoc m "key-0" [1])
+                 (assoc m "key-0" 1.25) (assoc m "key-0" 9223372036854775807)]]
+      (is (nil? (project bad))))
+    (let [changed (assoc m "key-0" -42)]
+      (is (= (encoded (existing/oracle changed)) (encoded (project changed)))))))
+
+(deftest hamt-view-hits-avoid-the-original-copying-converter
+  (doseq [enabled? [false true]]
+    (let [calls (atom 0) original @#'any/original-try-scalar-string-map
+          project (any/scalar-text-payload-projector @folder
+                    {:shape-plan-factory
+                     (shapes/native-view-plan-factory (codec/native-scalar-text-view-box) enabled?)})
+          base (existing/plain-fixture 17)]
+      (with-redefs [any/original-try-scalar-string-map
+                    (fn [v] (swap! calls inc) (original v))]
+        (doseq [i (range 3)]
+          (let [m (assoc base "key-0" i) result (project m)]
+            (is result)
+            (is (= (encoded (existing/oracle m)) (encoded result))))))
+      (is (= (if enabled? 1 3) @calls)))))
 
 (defn -main [& [expected-codec]]
   (when expected-codec

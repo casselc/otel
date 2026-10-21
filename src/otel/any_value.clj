@@ -500,8 +500,10 @@
   data.json value. The existing scalar-string-map-payload-converter is unchanged.
 
   SDK owns all eight ORIGINAL policy anchors and scalar limits. Source-root
-  cache hits run first, then the original plain-map helper, learned sorted-map
-  view, and original sorted-map fallback. Learn only after original admission.
+  cache hits run first, then a learned encoder view, then original plain-map
+  or sorted-map admission. Learn only after original admission. A compatible
+  factory may support bounded ordinary HAMT views; older sorted-only factories
+  still decline ordinary maps and retain their existing fallback.
   Views do not enter the ordinary plain-map root cache. Successful fallback
   maps retain its existing fresh-wrapper/admission/retention behavior.
 
@@ -528,11 +530,10 @@
         (fn [value]
           (when (current?)
             (or (lookup value)
-                (when-let [converted (original-try-scalar-string-map value)]
-                  (store! value converted))
                 (when-let [view (shape-lookup value)]
                   ;; Do not send an opaque view through the plain-map cache.
                   (when (current?) view))
-                (when-let [converted (original-try-sorted-scalar-string-map value)]
+                (when-let [converted (or (original-try-scalar-string-map value)
+                                         (original-try-sorted-scalar-string-map value))]
                   (learn! value)
                   (store! value converted)))))))))

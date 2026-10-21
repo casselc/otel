@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Let the optional encoder-only scalar-text projector use a compatible
+  factory's learned ordinary-map views before copying normalized maps. Learn
+  only after original admission, keep root-cache priority and all eight policy
+  fences, and retain fallback with older sorted-only factories. No default
+  canonicalization, map-returning converter or exporter selection changes.
+
 - Classify OTLP AnyValue's seven fixed fields with a bounded scan rather than
   a per-value lazy filter. Preserve field precedence, empty values, conflicting
   field rejection, and the existing depth/node/byte validation.
