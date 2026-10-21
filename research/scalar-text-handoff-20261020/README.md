@@ -12,6 +12,11 @@ normalization path. Never use a view as an ordinary map or data.json input.
 No exporter has adopted it yet; no defaults, capture, persistence or queueing
 semantics changed. The prototype is not ready to repin into an application.
 
+Claude read-only review of exact implementation `d11752a`: APPROVE (prototype
+scope only), no blockers. Review did not execute tests; Codex owns the actual
+new/regression/baseline runs. Fixed budgets deliberately have no caller override
+in this first API. See `claude-review.txt` for the bounded source review.
+
 The defining SDK supplies all eight original policy roots, scalar limits,
 trusted sorted prototype and fixed per-payload budgets. The codec receives no
 application-owned substitutes for those private anchors. Conversion order is:
