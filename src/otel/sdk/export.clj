@@ -17,6 +17,7 @@
   An exporter is the thing that actually writes them somewhere."
   (:require [otel.context :as ctx]
             [otel.sdk.lifecycle :as lifecycle]
+            [otel.sdk.preparation :as preparation]
             [otel.trace :as trace]))
 
 (defprotocol SpanExporter
@@ -112,6 +113,7 @@
 (defn- checked-batch-config
   [opts]
   (let [config (merge default-batch-config opts)]
+    (preparation/checked-adapter (:experimental-span-preparation config))
     (doseq [option [:max-queue-size :max-export-batch-size
                     :schedule-delay-ms]]
       (when-not (and (integer? (get config option))
@@ -156,7 +158,7 @@
                  (update :failed-span-count + span-count)))))
   false)
 
-(defn- drain!
+(defn- drain-synchronous!
   "Export everything queued and retain scalar delivery evidence for its owner."
   [exporter state batch-size worker-owned?]
   (loop [ok true]
@@ -179,6 +181,19 @@
           (if (and worker-owned? (:shutdown-cancelled? @state))
             (fail-queued-after-cancellation! state)
             (recur (and exported? ok))))))))
+
+(defn- drain!
+  [exporter state batch-size worker-owned? config]
+  (if-let [adapter (:experimental-span-preparation config)]
+    (do
+      (when worker-owned? (swap! state assoc :worker-export-active? true))
+      (try
+        (ctx/with-instrumentation-suppressed
+          (preparation/drain! adapter state batch-size take-batch!
+                              fail-queued-after-cancellation!))
+        (finally
+          (when worker-owned? (swap! state assoc :worker-export-active? false)))))
+    (drain-synchronous! exporter state batch-size worker-owned?)))
 
 (def ^:private shutdown-poll-ms
   "How often the worker checks for shutdown while waiting out its export interval.
@@ -203,10 +218,21 @@
 
 (defn- final-span-drain! [exporter state config]
   (locking state
-    (let [drained? (drain! exporter state (:max-export-batch-size config) false)
+    (let [drained? (drain! exporter state (:max-export-batch-size config) false config)
           flushed? (flush-exporter-suppressed! exporter)
           no-lifetime-failures? (zero? (:failed-span-count @state))]
       (boolean (and drained? flushed? no-lifetime-failures?)))))
+
+(defn- final-worker-span-drain! [exporter state config]
+  (locking state
+    (when (:experimental-span-preparation config)
+      ;; The opt-in worker owns ALL preparation through its stable shutdown
+      ;; queue-empty boundary. A dead worker with leftover spans is a failed
+      ;; ownership boundary, not permission for new caller-owned preparation.
+      (when (seq (:queue @state))
+        (swap! state assoc :preparation-unsettled? true))
+      (preparation/require-settled! state))
+    (final-span-drain! exporter state config)))
 
 (defrecord BatchSpanProcessor [exporter state config worker terminal]
   lifecycle/SettlementWitness
@@ -247,13 +273,21 @@
         ;; healthy export a cooperative grace, then interrupt only when this
         ;; exact worker still owns exporter I/O. A failed bounded join leaves
         ;; the exporter open; a timeout is not evidence of quiescence.
-        (let [_ (lifecycle/await-owned-worker! worker state)
+        (let [_ (if-let [adapter (:experimental-span-preparation config)]
+                  (lifecycle/await-owned-worker!
+                   worker state {:before-worker-interrupt! (:fence! adapter)})
+                  (lifecycle/await-owned-worker! worker state))
+              _ (preparation/require-settled! state)
               flush-outcome (try
-                              {:value (final-span-drain! exporter state config)}
+                              {:value (final-worker-span-drain! exporter state config)}
                               (catch :default throwable
                                 {:throwable throwable}))
               close-outcome (try
                               {:value (locking state
+                                        ;; Final drain itself can discover an
+                                        ;; unretired capability after the
+                                        ;; pre-drain guard above succeeded.
+                                        (preparation/require-settled! state)
                                         (lifecycle/release-exporter! state
                                           #(shutdown-exporter-suppressed! exporter)))}
                               (catch :default throwable
@@ -319,8 +353,12 @@
                       ;; ended just before shutdown must still be exported.
                       (locking state
                         (drain! exporter state (:max-export-batch-size config)
-                                true))
-                      (when-not (:shutdown? @state) (recur)))))]
+                                true config))
+                      (let [snapshot @state]
+                        (when (or (not (:shutdown? snapshot))
+                                  (and (:experimental-span-preparation config)
+                                       (seq (:queue snapshot))))
+                          (recur))))))]
      ;; Publish the full owner privately BEFORE the first resource user starts.
      (let [owner (->BatchSpanProcessor exporter state config worker
                                        (lifecycle/terminal-action))]
@@ -333,7 +371,11 @@
   "Queue ended spans and export them from a background thread.
 
   Options: :max-queue-size (2048), :max-export-batch-size (512),
-  :schedule-delay-ms (5000). Optional receipt belongs to one construction call."
+  :schedule-delay-ms (5000). Optional receipt belongs to one construction call.
+  Experimental :experimental-span-preparation accepts only the explicit trusted
+  adapter contract documented in otel.sdk.preparation. It overlaps preparation
+  with one confirmed publication, not two exporter workers. Nil keeps ordinary
+  synchronous export. This API is not an automatic asynchronous-export adapter."
   ([exporter] (batch-processor-owned exporter {} (lifecycle/construction-receipt)))
   ([exporter opts]
    (batch-processor-owned exporter opts (lifecycle/construction-receipt)))

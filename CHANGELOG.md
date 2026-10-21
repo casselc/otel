@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add an experimental explicit span-preparation adapter to the batch processor.
+  One SDK worker can prepare the next batch while a resource-owned publisher
+  confirms the previous one. Keep at most two reservations, count success only
+  on literal confirmed completion, fence late submission before cancellation,
+  and withhold cleanup proof on uncertain retirement. Ordinary exporters and
+  default synchronous batching are unchanged. Real exporter/native performance
+  qualification is still required; this hook alone is not a throughput claim.
+
 - Prototype a separate opt-in scalar-text payload projector for trusted codec
   views. Keep SDK-owned policy checks and root-cache/plain-map precedence, while
   allowing a codec to avoid normalized HAMTs and numeric Strings. The existing
