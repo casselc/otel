@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Prototype a separate opt-in scalar-text payload projector for trusted codec
+  views. Keep SDK-owned policy checks and root-cache/plain-map precedence, while
+  allowing a codec to avoid normalized HAMTs and numeric Strings. The existing
+  map-returning converter, SDK defaults and delivery behavior are unchanged;
+  whole-consumer performance and integration qualification remain pending.
+
 - Add opt-in bounded scalar attribute key-shape plans to the payload converter.
   A trusted independent native factory can reuse key/hash geometry for distinct
   sorted maps with the same fields, without per-map hashing or manual schemas.
