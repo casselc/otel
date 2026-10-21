@@ -28,8 +28,19 @@
 (defn load-string-map-converter!
   "Internal: policy anchors come from otel.any-value's defining namespace."
   [bindings maximum]
-  (let [convert ((scheme/eval-string converter-source) bindings maximum)]
+  (let [convert ((scheme/eval-string converter-source) bindings maximum false)]
     (fn [value] (convert value))))
+
+(def ^:private scalar-map-view-factory
+  (delay (scheme/eval-string converter-source)))
+
+(defn load-scalar-map-view-projector!
+  "Internal trusted codec bridge. SDK supplies ORIGINAL policy anchors and
+  bound; admission is identical to the ordinary map helper. The native box
+  must be callback-free and own no mutable alias. Inputs stay immutable while
+  the resulting encoder-only view is in use; no map-returning API changes."
+  [bindings maximum native-box]
+  (@scalar-map-view-factory bindings maximum native-box))
 
 (defmacro ^:private sorted-source []
   (if-let [url (io/resource "otel/sorted_scalar_string_map.ss")]

@@ -4,7 +4,7 @@
 ;; SDK string-bytes charges exactly 4 * host character count, not actual UTF8
 ;; bytes. Jolt count and Chez string-length both count the same codepoints.
 ;; The loader separately fences the host's entire fixnum range within Int64.
-(lambda (bindings maximum)
+(lambda (bindings maximum view-box)
   (define (same-policy?)
     (let loop ((i 0))
       (or (= i (pvec-cnt bindings))
@@ -40,4 +40,5 @@
   (lambda (m)
     (and (pmap? m) (> (pmap-cnt m) 8) (<= (pmap-cnt m) 128)
          (same-policy?) (admitted? (pmap-root m)) (same-policy?)
-         (make-pmap (copy-node (pmap-root m)) (pmap-cnt m)))))
+         (if view-box (view-box m)
+             (make-pmap (copy-node (pmap-root m)) (pmap-cnt m))))))

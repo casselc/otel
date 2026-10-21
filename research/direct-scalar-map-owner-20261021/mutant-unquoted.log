@@ -1,0 +1,87 @@
+
+FAIL in (ordinary-map-views-preserve-order-values-and-immutable-inputs) (direct_scalar_map_view_test.clj:27)
+expected: (true? (= (encoded (existing/oracle m)) (encoded a) (encoded b)))
+  actual: false
+
+FAIL in (ordinary-map-views-preserve-order-values-and-immutable-inputs) (direct_scalar_map_view_test.clj:29)
+expected: (true? (= (encoded (existing/oracle changed)) (encoded (p changed))))
+  actual: false
+
+FAIL in (ordinary-map-views-preserve-order-values-and-immutable-inputs) (direct_scalar_map_view_test.clj:27)
+expected: (true? (= (encoded (existing/oracle m)) (encoded a) (encoded b)))
+  actual: false
+
+FAIL in (ordinary-map-views-preserve-order-values-and-immutable-inputs) (direct_scalar_map_view_test.clj:29)
+expected: (true? (= (encoded (existing/oracle changed)) (encoded (p changed))))
+  actual: false
+
+FAIL in (ordinary-map-views-preserve-order-values-and-immutable-inputs) (direct_scalar_map_view_test.clj:27)
+expected: (true? (= (encoded (existing/oracle m)) (encoded a) (encoded b)))
+  actual: false
+
+FAIL in (ordinary-map-views-preserve-order-values-and-immutable-inputs) (direct_scalar_map_view_test.clj:29)
+expected: (true? (= (encoded (existing/oracle changed)) (encoded (p changed))))
+  actual: false
+
+FAIL in (ordinary-map-views-preserve-order-values-and-immutable-inputs) (direct_scalar_map_view_test.clj:27)
+expected: (true? (= (encoded (existing/oracle m)) (encoded a) (encoded b)))
+  actual: false
+
+FAIL in (ordinary-map-views-preserve-order-values-and-immutable-inputs) (direct_scalar_map_view_test.clj:29)
+expected: (true? (= (encoded (existing/oracle changed)) (encoded (p changed))))
+  actual: false
+
+FAIL in (ordinary-map-views-preserve-order-values-and-immutable-inputs) (direct_scalar_map_view_test.clj:35)
+expected: (true? (= (encoded (existing/oracle m)) (encoded (p m))))
+  actual: false
+
+FAIL in (ordinary-map-views-preserve-order-values-and-immutable-inputs) (direct_scalar_map_view_test.clj:35)
+expected: (true? (= (encoded (existing/oracle m)) (encoded (p m))))
+  actual: false
+
+FAIL in (ordinary-map-views-preserve-order-values-and-immutable-inputs) (direct_scalar_map_view_test.clj:35)
+expected: (true? (= (encoded (existing/oracle m)) (encoded (p m))))
+  actual: false
+
+FAIL in (ordinary-map-views-preserve-order-values-and-immutable-inputs) (direct_scalar_map_view_test.clj:35)
+expected: (true? (= (encoded (existing/oracle m)) (encoded (p m))))
+  actual: false
+
+FAIL in (ordinary-map-views-preserve-order-values-and-immutable-inputs) (direct_scalar_map_view_test.clj:35)
+expected: (true? (= (encoded (existing/oracle m)) (encoded (p m))))
+  actual: false
+
+FAIL in (all-eight-original-policy-anchors-fence-existing-and-new-projectors) (direct_scalar_map_view_test.clj:45)
+expected: (true? (= (encoded (existing/oracle m)) (encoded (p m))))
+  actual: false
+
+FAIL in (admission-is-identical-and-unsupported-inputs-never-reach-box) (direct_scalar_map_view_test.clj:64)
+expected: (true? (= (encoded (existing/oracle good)) (encoded (p good))))
+  actual: false
+
+FAIL in (admission-is-identical-and-unsupported-inputs-never-reach-box) (direct_scalar_map_view_test.clj:64)
+expected: (true? (= (encoded (existing/oracle good)) (encoded (p good))))
+  actual: false
+
+FAIL in (admission-is-identical-and-unsupported-inputs-never-reach-box) (direct_scalar_map_view_test.clj:64)
+expected: (true? (= (encoded (existing/oracle good)) (encoded (p good))))
+  actual: false
+
+FAIL in (output-limits-depth-independent-output-and-failure-stop) (direct_scalar_map_view_test.clj:77)
+expected: (true? (= (vec expected) (vec output)))
+  actual: false
+
+FAIL in (output-limits-depth-independent-output-and-failure-stop) (direct_scalar_map_view_test.clj:78)
+expected (thrown? Throwable (codec/encode-prefixed-records c "SQL\n" [v v] vector (dec limit))) to throw
+expected: (thrown? Throwable (codec/encode-prefixed-records c "SQL\n" [v v] vector (dec limit)))
+  actual: nil
+
+FAIL in (output-limits-depth-independent-output-and-failure-stop) (direct_scalar_map_view_test.clj:80)
+expected: (true? (= (vec expected) (vec (codec/encode-prefixed-records c "SQL\n" [v v] vector limit))))
+  actual: false
+
+FAIL in (output-limits-depth-independent-output-and-failure-stop) (direct_scalar_map_view_test.clj:84)
+expected: (true? (= (attempt ordinary) (attempt v)))
+  actual: false
+
+Ran 10 tests. 151 assertions passed, 21 failures, 0 errors.

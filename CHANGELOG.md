@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Prototype an optional ordinary-map view box for the separate scalar-text
+  encoder handoff. Reuse the SDK's exact admission and original policy anchors,
+  avoiding replacement map nodes and numeric Strings for immutable admitted
+  inputs. Existing map-returning APIs and defaults are unchanged; measured
+  component allocation is lower, but throughput/tail adoption is not qualified.
+
 - Prototype a separate opt-in scalar-text payload projector for trusted codec
   views. Keep SDK-owned policy checks and root-cache/plain-map precedence, while
   allowing a codec to avoid normalized HAMTs and numeric Strings. The existing

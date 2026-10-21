@@ -490,6 +490,13 @@
   ([folder] (scalar-string-map-payload-converter* 64 65536 folder))
   ([folder options] (scalar-string-map-payload-converter* 64 65536 folder options)))
 
+(defn- load-scalar-map-view-projector [bindings native-box]
+  (try
+    (require 'otel.any-value-native)
+    ((ns-resolve 'otel.any-value-native 'load-scalar-map-view-projector!)
+     bindings (quot (:max-bytes scalar-default-limits) 4) native-box)
+    (catch Throwable _ nil)))
+
 (defn scalar-text-payload-projector
   "Experimental encoder-only handoff, NOT a map-returning converter.
 
@@ -510,6 +517,14 @@
   native template overhead. Views may own ephemeral value slots but plans must
   retain no source maps/trees/telemetry values. These are not hard RSS bounds.
 
+  Optional :ordinary-map-view-box is a trusted callback-free native codec box.
+  It selects the SAME ordinary-map admission (including collision declines),
+  but hands immutable admitted input to an opaque encoder view instead of
+  allocating scalar Strings/replacement nodes. Views are not root-cache entries.
+  The codec must drop source metadata, retain no mutable output aliases and
+  consume only under its explicit immutable-input contract. No values are
+  cached across calls. Requesting an unavailable box capability returns nil.
+
   Requires {:shape-plan-factory trusted-native-factory}; the factory and optional
   folder have the same trusted callback-free native contracts as the existing
   map converter. No callback/global registration, permission to skip policy,
@@ -517,10 +532,17 @@
   Input Strings/collections must remain immutable during use. Not adopted by
   default SDK/exporter use; a whole consumer needs separate qualification."
   [folder options]
-  (when-not (and (map? options) (= #{:shape-plan-factory} (set (keys options)))
-                 (ifn? (:shape-plan-factory options)))
+  (when-not (and (map? options)
+                 (every? #{:shape-plan-factory :ordinary-map-view-box} (keys options))
+                 (ifn? (:shape-plan-factory options))
+                 (or (not (contains? options :ordinary-map-view-box))
+                     (ifn? (:ordinary-map-view-box options))))
     (throw (ex-info "Invalid scalar-text projector options" {:type ::invalid-scalar-text-projector})))
-  (let [bindings (scalar-string-map-payload-bindings)]
+  (let [bindings (scalar-string-map-payload-bindings)
+        direct-requested? (contains? options :ordinary-map-view-box)
+        direct (when direct-requested?
+                 (load-scalar-map-view-projector bindings (:ordinary-map-view-box options)))]
+   (when (or (not direct-requested?) (ifn? direct))
     (when-let [{:keys [current? lookup store!]}
                (load-scalar-string-map-payload-cache bindings 64 65536 folder)]
       (when-let [{shape-lookup :lookup learn! :learn!}
@@ -528,6 +550,9 @@
         (fn [value]
           (when (current?)
             (or (lookup value)
+                (when direct
+                  (when-let [view (direct value)]
+                    (when (current?) view)))
                 (when-let [converted (original-try-scalar-string-map value)]
                   (store! value converted))
                 (when-let [view (shape-lookup value)]
@@ -535,4 +560,4 @@
                   (when (current?) view))
                 (when-let [converted (original-try-sorted-scalar-string-map value)]
                   (learn! value)
-                  (store! value converted)))))))))
+                  (store! value converted))))))))))

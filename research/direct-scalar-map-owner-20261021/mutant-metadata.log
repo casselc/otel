@@ -1,0 +1,18 @@
+
+FAIL in (ordinary-map-views-preserve-order-values-and-immutable-inputs) (direct_scalar_map_view_test.clj:28)
+expected: (= [true true true] (inspect a m))
+  actual: (not (= [true true true] [false true false]))
+
+FAIL in (ordinary-map-views-preserve-order-values-and-immutable-inputs) (direct_scalar_map_view_test.clj:28)
+expected: (= [true true true] (inspect a m))
+  actual: (not (= [true true true] [false true false]))
+
+FAIL in (ordinary-map-views-preserve-order-values-and-immutable-inputs) (direct_scalar_map_view_test.clj:28)
+expected: (= [true true true] (inspect a m))
+  actual: (not (= [true true true] [false true false]))
+
+FAIL in (ordinary-map-views-preserve-order-values-and-immutable-inputs) (direct_scalar_map_view_test.clj:28)
+expected: (= [true true true] (inspect a m))
+  actual: (not (= [true true true] [false true false]))
+
+Ran 10 tests. 168 assertions passed, 4 failures, 0 errors.

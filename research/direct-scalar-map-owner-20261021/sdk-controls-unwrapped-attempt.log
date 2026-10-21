@@ -1,0 +1,289 @@
+
+FAIL in (fresh-wrapper-shares-root-but-never-the-same-wrapper) (payload_scalar_string_map_cache_test.clj:28)
+native payload cache must be available in this gate
+expected: (some? convert)
+  actual: (not (some? nil))
+
+ERROR in (fresh-wrapper-shares-root-but-never-the-same-wrapper) (:)
+Uncaught exception, not in assertion.
+expected: nil
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (repeated-calls-on-the-same-source-skip-reconversion) (payload_scalar_string_map_cache_test.clj:40)
+expected: (= (oracle m) (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+FAIL in (repeated-calls-on-the-same-source-skip-reconversion) (payload_scalar_string_map_cache_test.clj:41)
+expected: (= 1 (clojure.core/deref calls))
+  actual: (not (= 1 0))
+
+ERROR in (repeated-calls-on-the-same-source-skip-reconversion) (payload_scalar_string_map_cache_test.clj:42)
+expected: (= (oracle m) (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+FAIL in (repeated-calls-on-the-same-source-skip-reconversion) (payload_scalar_string_map_cache_test.clj:43)
+a warm identity hit must not re-run the original converter
+expected: (= 1 (clojure.core/deref calls))
+  actual: (not (= 1 0))
+
+ERROR in (distinct-source-wrappers-may-share-only-immutable-contents) (:)
+Uncaught exception, not in assertion.
+expected: nil
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (plain-and-sorted-maps-match-existing-helper-order-type-and-metadata) (:)
+Uncaught exception, not in assertion.
+expected: nil
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (unsupported-shapes-decline-like-the-existing-helpers) (payload_scalar_string_map_cache_test.clj:100)
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (unsupported-shapes-decline-like-the-existing-helpers) (payload_scalar_string_map_cache_test.clj:100)
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (unsupported-shapes-decline-like-the-existing-helpers) (payload_scalar_string_map_cache_test.clj:100)
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (unsupported-shapes-decline-like-the-existing-helpers) (payload_scalar_string_map_cache_test.clj:100)
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (unsupported-shapes-decline-like-the-existing-helpers) (payload_scalar_string_map_cache_test.clj:100)
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (unsupported-shapes-decline-like-the-existing-helpers) (payload_scalar_string_map_cache_test.clj:100)
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (unsupported-shapes-decline-like-the-existing-helpers) (payload_scalar_string_map_cache_test.clj:100)
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (unsupported-shapes-decline-like-the-existing-helpers) (payload_scalar_string_map_cache_test.clj:100)
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (unsupported-shapes-decline-like-the-existing-helpers) (payload_scalar_string_map_cache_test.clj:100)
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (unsupported-shapes-decline-like-the-existing-helpers) (payload_scalar_string_map_cache_test.clj:100)
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (unsupported-shapes-decline-like-the-existing-helpers) (payload_scalar_string_map_cache_test.clj:100)
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (unsupported-shapes-decline-like-the-existing-helpers) (payload_scalar_string_map_cache_test.clj:100)
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (unsupported-shapes-decline-like-the-existing-helpers) (payload_scalar_string_map_cache_test.clj:100)
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (unsupported-shapes-decline-like-the-existing-helpers) (payload_scalar_string_map_cache_test.clj:100)
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (unsupported-shapes-decline-like-the-existing-helpers) (payload_scalar_string_map_cache_test.clj:100)
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (unsupported-shapes-decline-like-the-existing-helpers) (payload_scalar_string_map_cache_test.clj:102)
+expected: (nil? (convert (assoc (plain-fixture 16) "Aa" 1 "BB" 2)))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (eight-policy-roots-decline-after-a-warm-hit-and-restore-cleanly) (payload_scalar_string_map_cache_test.clj:116)
+warm the cache with one real hit first
+expected: (= (oracle m) (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (eight-policy-roots-decline-after-a-warm-hit-and-restore-cleanly) (payload_scalar_string_map_cache_test.clj:120)
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (eight-policy-roots-decline-after-a-warm-hit-and-restore-cleanly) (payload_scalar_string_map_cache_test.clj:120)
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (eight-policy-roots-decline-after-a-warm-hit-and-restore-cleanly) (payload_scalar_string_map_cache_test.clj:120)
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (eight-policy-roots-decline-after-a-warm-hit-and-restore-cleanly) (payload_scalar_string_map_cache_test.clj:120)
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (eight-policy-roots-decline-after-a-warm-hit-and-restore-cleanly) (payload_scalar_string_map_cache_test.clj:120)
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (eight-policy-roots-decline-after-a-warm-hit-and-restore-cleanly) (payload_scalar_string_map_cache_test.clj:120)
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (eight-policy-roots-decline-after-a-warm-hit-and-restore-cleanly) (payload_scalar_string_map_cache_test.clj:120)
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (eight-policy-roots-decline-after-a-warm-hit-and-restore-cleanly) (payload_scalar_string_map_cache_test.clj:120)
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (eight-policy-roots-decline-after-a-warm-hit-and-restore-cleanly) (payload_scalar_string_map_cache_test.clj:123)
+roots restored: the cache must resume ordinary reuse, not stay poisoned
+expected: (= (oracle m) (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (a-late-policy-change-declines-with-nil-not-native-false) (payload_scalar_string_map_cache_test.clj:139)
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (a-late-policy-change-declines-with-nil-not-native-false) (payload_scalar_string_map_cache_test.clj:141)
+expected: (= (oracle m) (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (sorted-map-ops-and-cnt-mutation-miss-rather-than-stale-hit) (payload_scalar_string_map_cache_test.clj:148)
+an :ops swap misses the cache instead of replaying the primed value
+prime the cache for this sorted map identity
+expected: (= good (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (sorted-map-ops-and-cnt-mutation-miss-rather-than-stale-hit) (payload_scalar_string_map_cache_test.clj:150)
+an :ops swap misses the cache instead of replaying the primed value
+a non-stock :ops must decline like the original helper, never a stale hit
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (sorted-map-ops-and-cnt-mutation-miss-rather-than-stale-hit) (payload_scalar_string_map_cache_test.clj:154)
+a :cnt corruption misses the cache instead of replaying the primed value
+prime the cache for this sorted map identity
+expected: (= good (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (sorted-map-ops-and-cnt-mutation-miss-rather-than-stale-hit) (payload_scalar_string_map_cache_test.clj:156)
+a :cnt corruption misses the cache instead of replaying the primed value
+a :cnt that no longer matches the tree must decline, never a stale hit
+expected: (nil? (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (a-budget-decline-still-returns-a-correct-uncached-conversion) (payload_scalar_string_map_cache_test.clj:162)
+expected: (= (oracle m) (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (a-budget-decline-still-returns-a-correct-uncached-conversion) (payload_scalar_string_map_cache_test.clj:162)
+expected: (= (oracle m) (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (a-budget-decline-still-returns-a-correct-uncached-conversion) (payload_scalar_string_map_cache_test.clj:162)
+expected: (= (oracle m) (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (a-budget-decline-still-returns-a-correct-uncached-conversion) (payload_scalar_string_map_cache_test.clj:162)
+expected: (= (oracle m) (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (a-budget-decline-still-returns-a-correct-uncached-conversion) (payload_scalar_string_map_cache_test.clj:166)
+expected: (= (oracle over-budget) (convert over-budget))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (a-budget-decline-still-returns-a-correct-uncached-conversion) (payload_scalar_string_map_cache_test.clj:167)
+expected: (= (oracle over-budget) (convert over-budget))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+FAIL in (a-budget-decline-still-returns-a-correct-uncached-conversion) (payload_scalar_string_map_cache_test.clj:168)
+an entry outside the insertion budget must recompute on every call
+expected: (= 2 (clojure.core/deref calls))
+  actual: (not (= 2 0))
+
+ERROR in (a-tiny-character-budget-still-returns-correct-uncached-conversions) (payload_scalar_string_map_cache_test.clj:176)
+expected: (= (oracle m) (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (a-tiny-character-budget-still-returns-correct-uncached-conversions) (payload_scalar_string_map_cache_test.clj:177)
+expected: (= (oracle m) (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+FAIL in (a-tiny-character-budget-still-returns-correct-uncached-conversions) (payload_scalar_string_map_cache_test.clj:178)
+a 1-char budget admits no entry, so every call recomputes
+expected: (= 2 (clojure.core/deref calls))
+  actual: (not (= 2 0))
+
+ERROR in (zero-insertion-budget-retains-correct-fresh-results) (:)
+Uncaught exception, not in assertion.
+expected: nil
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (sorted-tree-replacement-cannot-replay-the-old-value) (payload_scalar_string_map_cache_test.clj:197)
+expected: (= (oracle m) (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (sorted-tree-replacement-cannot-replay-the-old-value) (payload_scalar_string_map_cache_test.clj:199)
+expected: (= (oracle replacement) (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (sorted-tree-replacement-cannot-replay-the-old-value) (payload_scalar_string_map_cache_test.clj:200)
+expected: (not= (oracle (sorted-fixture 16)) (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (oversized-keys-count-against-the-character-budget) (payload_scalar_string_map_cache_test.clj:208)
+expected: (= (oracle m) (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (oversized-keys-count-against-the-character-budget) (payload_scalar_string_map_cache_test.clj:209)
+expected: (= (oracle m) (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+FAIL in (oversized-keys-count-against-the-character-budget) (payload_scalar_string_map_cache_test.clj:210)
+keys, not just formatted values, consume the budget
+expected: (= 2 (clojure.core/deref calls))
+  actual: (not (= 2 0))
+
+ERROR in (independently-created-payloads-do-not-share-conversions) (payload_scalar_string_map_cache_test.clj:219)
+expected: (= (oracle m) (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (independently-created-payloads-do-not-share-conversions) (payload_scalar_string_map_cache_test.clj:219)
+expected: (= (oracle m) (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (independently-created-payloads-do-not-share-conversions) (payload_scalar_string_map_cache_test.clj:219)
+expected: (= (oracle m) (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (independently-created-payloads-do-not-share-conversions) (payload_scalar_string_map_cache_test.clj:219)
+expected: (= (oracle m) (convert m))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+FAIL in (independently-created-payloads-do-not-share-conversions) (payload_scalar_string_map_cache_test.clj:220)
+expected: (= 2 (clojure.core/deref calls))
+  actual: (not (= 2 0))
+
+ERROR in (cache-does-not-retain-source-wrapper-or-its-metadata) (payload_scalar_string_map_cache_test.clj:249)
+expected: (probe make-input convert false)
+  actual: java.lang.NullPointerException: attempt to apply non-procedure nil
+
+ERROR in (cache-does-not-retain-source-wrapper-or-its-metadata) (payload_scalar_string_map_cache_test.clj:250)
+expected: (probe make-input convert true)
+  actual: java.lang.NullPointerException: attempt to apply non-procedure nil
+
+ERROR in (provided-folder-is-used-for-store-but-not-warm-hits) (stock_payload_cache_folder_test.clj:30)
+expected: (= (existing/oracle source) (convert source))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+ERROR in (provided-folder-is-used-for-store-but-not-warm-hits) (stock_payload_cache_folder_test.clj:31)
+expected: (= (existing/oracle source) (convert source))
+  actual: java.lang.ClassCastException: class nil cannot be cast to class clojure.lang.IFn
+
+FAIL in (provided-folder-is-used-for-store-but-not-warm-hits) (stock_payload_cache_folder_test.clj:32)
+expected: (= 1 (clojure.core/deref calls))
+  actual: (not (= 1 2))
+
+Ran 46 tests. 422 assertions passed, 8 failures, 59 errors.

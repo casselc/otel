@@ -1,0 +1,24 @@
+## Review: SDK-owned ordinary-scalar-map view (UNADOPTED prototype)
+
+**Note:** Write/Edit/ExitPlanMode tools aren't available in this session despite the plan-mode scaffolding referencing them, so this review is delivered as text (plus one item via ReportFindings) rather than a plan file. No edits, execution, or publishing occurred — review was read-only throughout.
+
+### Observations (from the files directly)
+- `scalar_string_map.ss` diff vs. the pinned base (`6cd57c86`): only a new `view-box` third parameter and the final branch `(if view-box (view-box m) (make-pmap (copy-node (pmap-root m)) (pmap-cnt m)))`. `same-policy?`/`admitted?` — which encode collision-bucket decline, policy-anchor fencing, and the 9..128/key/value admission rules — are byte-identical to base and run **before** that branch.
+- `any_value_native.clj`: existing `load-string-map-converter!` passes the literal `false` for `view-box`, so that call site is untouched; `load-scalar-map-view-projector!` is purely additive.
+- `any_value.clj`: `scalar-text-payload-projector` is extended additively (new `:ordinary-map-view-box` option, new `direct` lookup branch); the no-option arity still returns a plain map, confirmed both by source diff and by the `explicit-capability-validation-and-old-api-stays-map-returning` test.
+- `json.ss`'s `ffc-json-direct-scalar-map-box` builds `(make-ffc-json-scalar-map (make-pmap (pmap-root m) (pmap-cnt m)) #f)` — fresh wrapper, shared root, dropped metadata — matching both READMEs' stated contract exactly.
+- All log files match the counts both READMEs cite, with 0 errors in every case: `direct-controls.log` 10/172, `sdk-controls.log` 27/389, `sdk-cache-controls.log` 19/162, codec `check.log` 1/11. `mutant-unquoted.log` (21 failures/0 errors) and `mutant-metadata.log` (4 failures/0 errors) are real assertion failures, not startup breakage — confirming the two negative controls actually exercise number-quoting and fresh-wrapper/no-metadata, respectively.
+- `screen.edn` numbers match the README table exactly (178.13/195.79/196.93/196.93ms baseline vs. 172.94/292.40/317.63/317.63ms direct; 8983.04 vs. 8464.59 B/row). With n=16/arm, p95 and p99 necessarily collapse to the sample max, and the README says so explicitly rather than implying a tail estimate.
+- `context.clj`/`check.clj` select the option through the public `any/scalar-text-payload-projector` factory; private exporter Vars are used only for test fixtures (row/span encoding), not for policy selection — no exporter default/pin change anywhere in scope.
+
+### Answers to the three questions
+1. **Shared admission** — yes. Identical `same-policy?`/`admitted?` run unconditionally before the view/copy branch, so collision decline, policy-anchor checks, and generic fallback can't diverge between the legacy map path and the new view path. Default map API is byte-identical when `view-box` is absent/false.
+2. **View/metadata/loan contract vs. source** — matches. Fresh wrapper, shared root, dropped metadata, no enforced linear loan — stated identically in both READMEs/docstrings, and the metadata mutation control fails exactly the assertions (`eq?`/`meta`) that would catch a violation.
+3. **Unsound tests / unsupported claims** — none found that are actual defects. Every test count, mutation-failure count, and benchmark figure I could check against a log matched exactly, including the honest p95/p99-is-sample-max and GC-pause-doesn't-explain-the-slowdown caveats. One gap, reported via ReportFindings: the codec README's "43/596" standalone gate has no corresponding log in the reviewed scope to verify independently (unlike every other number, which did match its log).
+
+### Integration gates / path findings (not blockers)
+- Worst-case latency regressed 61% (196.93→317.63ms) alongside the median/allocation improvement; both READMEs already forbid treating this as a throughput win or default, consistent with the evidence — correctly caveated, not hidden.
+- No exporter flag, pin, or default wiring exists anywhere in the reviewed files; the new capability is strictly opt-in via an explicit option map at the public API boundary.
+- Opted-in direct views bypass the existing repeated-root cache reuse (flagged in the README as needing separate qualification before adoption) — a real cost to weigh before any future adoption decision, not a defect in what's here.
+
+**Bottom line:** no correctness, security, or test-soundness defects found in the reviewed scope. The one gap is an unverifiable (not disproven) test-count claim in the codec README, reported above.
