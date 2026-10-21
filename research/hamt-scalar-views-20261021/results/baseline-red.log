@@ -1,0 +1,5 @@
+
+FAIL in (hamt-view-hits-avoid-the-original-copying-converter) (scalar_text_payload_projector_test.clj:114)
+expected: (= (if enabled? 1 3) (clojure.core/deref calls))
+  actual: (not (= 1 3))
+:expected-baseline-red {:test 1, :pass 13, :fail 1, :error 0}
