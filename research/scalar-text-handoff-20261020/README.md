@@ -45,6 +45,7 @@ fresh wrappers, distinct-root opaque output, identical encoded bytes, all eight
 changed policies, unsupported inputs, full shape budget/fallback, unavailable
 factories and invalid options. Existing plain-map converter remains map-returning.
 New +existing injected-plan regression:11tests/140assertions, all pass. The
+default SDK aggregate also passes476tests/5484assertions on stock0.8.23. The
 older no-argument native-cache gate is NOT stock-qualified: a combined run had
 7failures/57errors in that namespace. The unchanged SDK14f58e5 baseline reproduces
 exactly7failures/57errors (16tests/27passing assertions), and confirms stock lacks
