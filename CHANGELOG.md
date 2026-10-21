@@ -10,6 +10,45 @@
   when callers pass those defaults explicitly, as the OTLP decoder does.
   Avoid repeated option-map and normalization-state construction without changing
   budgets, truncation, structured values, or redefined-default behavior.
+- Prototype a separate opt-in scalar-text payload projector for trusted codec
+  views. Keep SDK-owned policy checks and root-cache/plain-map precedence, while
+  allowing a codec to avoid normalized HAMTs and numeric Strings. The existing
+  map-returning converter, SDK defaults and delivery behavior are unchanged;
+  whole-consumer performance and integration qualification remain pending.
+
+- Add opt-in bounded scalar attribute key-shape plans to the payload converter.
+  A trusted independent native factory can reuse key/hash geometry for distinct
+  sorted maps with the same fields, without per-map hashing or manual schemas.
+  The SDK supplies original policy/limits, keeps existing root-cache admission,
+  and bounds extra key-only retention per payload. Existing arities, capture,
+  default behavior and unsupported-input fallbacks remain unchanged.
+
+- Allow the optional payload scalar-map cache to receive a trusted native map
+  folder, avoiding a dependency on compiler-global traversal helpers. Existing
+  arities, policy-root checks, per-payload budgets and unsupported-host fallback
+  remain unchanged. No cache or exporter mode is enabled by default.
+
+- Prototype optional `otel.any-value/scalar-string-map-payload-converter` for
+  repeated scalar attributes within one serial payload. Keep reuse bounded,
+  return fresh metadata-free map wrappers, recheck the defining SDK policy,
+  and decline cleanly on unsupported hosts. This does not change normal capture
+  or enable an exporter mode. Compiler-woven converter bodies remain unqualified.
+
+- Add optional `otel.any-value/try-sorted-scalar-string-map` to normalize
+  bounded stock sorted maps into fresh plain scalar-text maps. The SDK checks
+  original policy roots, operation-table identity and node geometry before
+  conversion. Custom operations and unsupported hosts/values decline without
+  callbacks; comparators are never invoked. Existing map-kind-preserving
+  conversion and normal capture/normalization remain unchanged.
+
+- Add optional `otel.any-value/try-scalar-string-map` for bounded builtin
+  primitive maps on qualified Jolt runtimes. The SDK owns original-policy
+  checks; changed helpers, unsupported inputs or hosts decline to ordinary
+  scalar conversion. Preserve values, bounds, map order and input ownership.
+  Use portable Throwable catching in AnyValue normalization so its host
+  fallback can load on Babashka/JVM as well as Jolt.
+  Qualify the real native capability separately on checksum-pinned stock Jolt
+  0.8.23 without changing the existing runtime floor or floor test lane.
 
 - Release the span batch worker's wait when a complete batch is queued, using
   the existing bounded wait slices without producer blocking or normal-use

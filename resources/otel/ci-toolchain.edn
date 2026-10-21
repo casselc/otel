@@ -3,6 +3,11 @@
   :source-commit "c2a494272cf82785ec8803426b495366000de572"
   :installer-sha256 "6e9e16d1db9875fd3e52e5143eab71375c00f44f3b5d321d61e9996a3c948736"
   :linux-x86-64-archive-sha256 "3dab6373f2028efaf7a0e41231fc316de866e55454023c037e9d5981be6358c2"}
+ :native-scalar-map
+ {:version "0.8.23"
+  :source-commit "a0ac71c3f638fe55158bd01b4ecbb0dd3d7545e5"
+  :installer-sha256 "737e4f3198f7bb41094b7cb9dc95029ac142694a4d3a829d4dcf64d7676e8a70"
+  :linux-x86-64-archive-sha256 "90031be43241e61d0788a2f1bbd3da56d8f4324ae9fa87271f9637b43a6071f2"}
  :checkout
  {:revision "11bd71901bbe5b1630ceea73d27597364c9af683"
   :release "v4.2.2"}}
