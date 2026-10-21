@@ -15,7 +15,34 @@
         org.clojure/tools.logging {:git/url "https://github.com/jolt-lang/logging"
                                    :git/sha "ec6747e55583118d881faf4ab41e68d7e587ce4c"}}
 
- :aliases {;; Models Samizdat's telemetry alias: its stock upstream coordinate
+ :aliases {:stock-payload-cache-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "otel.stock-payload-cache-folder-test"]}
+           :stock-shape-plans-test
+           {:extra-paths ["test"]
+            :extra-deps
+            {io.github.chucklehead-dev/jolt-codec
+             {:git/url "https://github.com/chucklehead-dev/jolt-otel-clickhouse.git"
+              :git/sha "6288a7ccd04087f01061275367f7dabffd39cdba"
+              :deps/root "incubator/codec"}}
+            :main-opts ["-m" "otel.payload-scalar-shape-plan-test"]}
+           :stock-scalar-views-test
+           {:extra-paths ["test"]
+            :extra-deps
+            {io.github.chucklehead-dev/jolt-codec
+             {:git/url "https://github.com/chucklehead-dev/jolt-otel-clickhouse.git"
+              :git/sha "68ee1ca8f2826c930ff668ea9532c0a3f498dc41"
+              :deps/root "incubator/codec"}}
+            :main-opts ["-m" "otel.scalar-text-payload-projector-test"
+                        "68ee1ca8f2826c930ff668ea9532c0a3f498dc41"]}
+           :sorted-scalar-map-native-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "otel.sorted-scalar-string-map-test"]}
+           :scalar-map-native-test
+           {:extra-paths ["test"]
+            :main-opts ["-m" "otel.scalar-string-map-test"]}
+
+           ;; Models Samizdat's telemetry alias: its stock upstream coordinate
            ;; is moved to the same URL and SHA as OTel's direct coordinate.
            ;; Jolt then emits one checkout/source provider, not two divergent
            ;; implementations of the jolt.http.* namespaces.

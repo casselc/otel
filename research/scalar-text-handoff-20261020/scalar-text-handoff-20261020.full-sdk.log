@@ -1,0 +1,25 @@
+{:phase :sdk43-global-rollback, :history :active-previous, :actual-is-previous? true, :actual-is-replacement? false, :actual-admission-retired? false, :registry-safe? true}
+{:phase :sdk43-global-rollback, :history :previous-retired, :actual-is-previous? false, :actual-is-replacement? false, :actual-admission-retired? nil, :registry-safe? true}
+{:phase :sdk43-global-rollback, :history :later-replacement, :actual-is-previous? false, :actual-is-replacement? true, :actual-admission-retired? false, :registry-safe? true}
+{:phase :sdk-init-rollback, :registration-fails? false, :owners {:spans {:worker-alive? false, :settlement {:quiescence :confirmed, :sdk-quiescence :confirmed, :exporter-quiescence :confirmed, :terminal :returned-true}}, :metrics {:worker-alive? false, :settlement {:quiescence :confirmed, :sdk-quiescence :confirmed, :exporter-quiescence :confirmed, :terminal :returned-true}}}, :releases {:spans 1, :metrics 1}, :returned-handle? true}
+{:phase :sdk-init-rollback, :registration-fails? true, :owners {:spans {:worker-alive? false, :settlement {:quiescence :confirmed, :sdk-quiescence :confirmed, :exporter-quiescence :confirmed, :terminal :returned-true}}, :metrics {:worker-alive? false, :settlement {:quiescence :confirmed, :sdk-quiescence :confirmed, :exporter-quiescence :confirmed, :terminal :returned-true}}}, :releases {:spans 1, :metrics 1}, :returned-handle? false}
+0.049   ms printed-span [internal] trace=bb4200ffbf646498… span=ead05483b2908754
+INFO otel.sdk.logs-test - bridged message
+WARN otel.sdk.logs-test - inside a span
+ERROR otel.sdk.logs-test - it failed clojure.lang.ExceptionInfo: boom {:a 1}
+INFO otel.sdk.logs-test - still logged
+otel: ignoring negative add to counter requests
+otel: ignoring negative add to counter negative-counter
+otel: ignoring negative add to counter negative-counter
+otel: ignoring negative add to counter negative-counter
+otel: ignoring negative add to counter negative-counter
+otel: ignoring negative add to counter negative-counter
+otel: ignoring negative add to counter negative-counter
+otel: metric callback for bad threw: boom
+otel:  export of 1 spans failed: read interrupted
+otel:  log export failed: read interrupted
+otel:  metric export failed: read interrupted
+
+Ran 476 tests. 5484 assertions passed, 0 failures, 0 errors.
+
+0 failures, 0 errors

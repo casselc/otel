@@ -1,0 +1,13 @@
+## APPROVE
+
+Reviewed the four specified artifacts only; source under `src/` is unchanged from the already-approved d11752a baseline.
+
+**deps.edn** — New `:stock-scalar-views-test` alias (lines 29–37) adds `jolt-codec` only as an `:extra-deps` entry scoped to this alias; the top-level `:deps` block (lines 11–16) has no codec dependency. Confirms the PR body's "no production codec dependency" claim. The alias's `:git/sha` (line 34) and the SHA passed as a CLI arg in `main-opts` (line 37) are identical: `68ee1ca8f2826c930ff668ea9532c0a3f498dc41`, matching the task's cited `68ee1ca`.
+
+**tests.yml** — New step "Require scalar-text views with the published independent library" (lines 97–98) runs `jolt -Srepro -M:stock-scalar-views-test` inside the `native-scalar-map` job (stock Jolt 0.8.23), placed after the sibling `stock-shape-plans-test` step and before the final `any-value` check. Naming and placement are parallel to the existing "Require bounded shape plans…" step; this is the correct job (stock 0.8.23, matches the PR body's validation environment) and doesn't touch the separate `test` job (stock 0.8.6).
+
+**scalar_text_payload_projector_test.clj** — `-main` (lines 78–83) asserts, when given an `expected-codec` arg, that `(io/resource "jolt/codec/scalar_text/experimental.clj")` resolves to a path ending in `/<sha>/incubator/codec/src/jolt/codec/scalar_text/experimental.clj`. This mirrors the precedent in `dependency_resolution_test.clj` (resource-path/coordinate assertions already used there) and correctly encodes the gitlibs checkout layout for a `:deps/root "incubator/codec"` dependency, so the test genuinely verifies the classpath resolved to the exact published SHA rather than a stale cache. Five `deftest` forms in the file match the PR body's "5/67" gate count.
+
+**pr-body.md** — Claims checked against the above are accurate and appropriately hedged: "no production codec dependency," "Add that gate to stock-Jolt CI," base stated as `perf/default-scalar-options-20261020`, and it explicitly defers to "exact-head hosted checks" rather than asserting CI already ran green on GitHub. Exporter/allocation claims are out of this review's scope and are already qualified ("does not establish a throughput or tail gain," "No S3/live-app claim").
+
+No blockers found.

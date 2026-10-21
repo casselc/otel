@@ -1,0 +1,26 @@
+**Verdict: APPROVE (prototype scope only)**
+
+Checked: `src/otel/any_value.clj` (full file, focus on L357–538), `test/otel/scalar_text_payload_projector_test.clj`, `research/scalar-text-handoff-20261020/README.md`, `test/otel/payload_scalar_string_map_cache_test.clj` L1–30 (`eight-roots`/`oracle`/fixtures), and the companion `jolt.codec.scalar-text.experimental` interface/docstrings only.
+
+**Policy-anchor preservation.** `scalar-text-payload-projector` (any_value.clj:493–538) builds its bindings via the existing `scalar-string-map-payload-bindings` helper (:357–368) — the same eight-anchor list the untouched `scalar-string-map-payload-converter*` uses. Both the root-cache loader and the shape-planner loader receive all eight anchors, so both the plain-map and view branches are fenced by every anchor. `all-eight-policy-anchors-still-fence-every-representation` exercises this with `with-redefs-fn` over each anchor and confirms nil for both map and sorted-map inputs — matches the code.
+
+**Precedence.** Code order at :528–538 is cache `lookup` → `original-try-scalar-string-map` (plain map) → `shape-lookup` (view) → `original-try-sorted-scalar-string-map` (fallback, `learn!` then `store!`). This matches the README's documented 4-step order, and `original-root-hits-and-plain-maps-win-before-opaque-views` confirms via an `ops` atom that the planner is never invoked when the cache or plain-map path already admits the value.
+
+**Unsupported-input fallback.** Bad/over-budget inputs (nil, nested value, float, out-of-range int, 129-entry map) return nil from the projector without touching `scalar-string-map-payload-converter`, per `unsupported-inputs-decline-without-changing-the-old-api`. The old converter is exercised in the same test and still returns a map — contract unchanged.
+
+**Map-returning converter contract.** `scalar-string-map-payload-converter`/`-converter*` are not modified; `scalar-text-payload-projector` is new code appended after them. README states this explicitly and the file matches: no edits to the existing functions' bodies.
+
+**Views excluded from the plain-map cache.** At :533–535 the `shape-lookup` (view) branch returns its result directly and never calls `store!`, unlike the plain-map and fallback branches, which both call `store!`. Matches the documented/tested claim that opaque views never enter the root cache.
+
+**Budgets.** Root cache call passes `64 65536` (:525) — matches "64/65536." Shape planner call passes `8 8192` (:527) — matches "8 schemas/8192 key chars." The "128 keys per schema" bound lives in the native factory layer (`jolt.codec.scalar-text.experimental` docstring), not in this file — reasonable, since any_value.clj delegates shape-plan enforcement to the trusted factory rather than re-implementing it.
+
+**Nonblocking notes (not blockers):**
+
+1. Narrow options validation is intentional, not a regression. The projector only accepts `#{:shape-plan-factory}` (:520–522), rejecting the `:max-shapes`/`:max-shape-key-chars` overrides the sibling converter allows. Correct given the projector's fixed-bound design, and covered by `invalid-options-and-unavailable-capabilities` — but it's a different validation surface from its sibling function, worth a one-line doc note if a second caller ever needs overrides.
+2. The view branch rechecks `current?` twice (:533, then :535 via `(when (current?) view)`). This is defensive, not required by the already-disclaimed single-threaded contract. If the second check ever fails, the `or` falls through to the sorted-map fallback branch, which re-learns/stores via the same native-layer policy recheck — no double-admission risk observed, just an edge case worth a comment if ever hit.
+3. Unverified by me: the README's "11 tests/140 assertions pass" and "7 failures/57 errors reproduced identically on stock 14f58e5" baseline claims were not independently re-run (execution was out of scope). Nothing in the code read contradicts either claim, and the 7/57 failures are attributed to a global compiler helper absent on stock Jolt — unrelated to this commit's new function.
+
+**Scope confirmation.** No exporter adoption, throughput, or durability claim appears in the code, tests, or README — all three explicitly disclaim it. Nothing read during this review contradicts that framing.
+
+---
+Note: I was in plan mode for this turn, but the task was a pure read-only review with no code to implement — and the Write tool (needed for the plan file) was disabled for this session, so there's no plan file to point to and no `ExitPlanMode` call; the review above is the complete deliverable.
