@@ -12,6 +12,13 @@ normalization path. Never use a view as an ordinary map or data.json input.
 No exporter has adopted it yet; no defaults, capture, persistence or queueing
 semantics changed. The prototype is not ready to repin into an application.
 
+Follow-up: the exporter now has an explicit opt-in with independent recovery of
+350,000 rows and exact-head stock CI; see exporter checkpoint `68ee1ca` and its
+review/docs follow-up `a373c1b`. This remains separate from enabling it in Oscope.
+The SDK branch merged consumer target `5aff604` (CI/deps changes only; SDK source
+unchanged), and adds `:stock-scalar-views-test` against published codec `68ee1ca`.
+That actual Git-component gate passes 5/67 and checks the selected source path.
+
 Claude read-only review of exact implementation `d11752a`: APPROVE (prototype
 scope only), no blockers. Review did not execute tests; Codex owns the actual
 new/regression/baseline runs. Fixed budgets deliberately have no caller override

@@ -1,5 +1,6 @@
 (ns otel.scalar-text-payload-projector-test
   (:require [clojure.test :refer [deftest is run-tests]]
+            [clojure.java.io :as io] [clojure.string :as str]
             [otel.any-value :as any]
             [otel.payload-scalar-string-map-cache-test :as existing]
             [jolt.codec.experimental :as codec]
@@ -74,6 +75,9 @@
     (is (nil? (any/scalar-text-payload-projector @folder {:shape-plan-factory f}))))
   (is (nil? (any/scalar-text-payload-projector nil {:shape-plan-factory (factory)}))))
 
-(defn -main [& _]
+(defn -main [& [expected-codec]]
+  (when expected-codec
+    (assert (str/ends-with? (str (io/resource "jolt/codec/scalar_text/experimental.clj"))
+                           (str "/" expected-codec "/incubator/codec/src/jolt/codec/scalar_text/experimental.clj"))))
   (let [r (run-tests 'otel.scalar-text-payload-projector-test)]
     (System/exit (if (zero? (+ (:fail r) (:error r))) 0 1))))
