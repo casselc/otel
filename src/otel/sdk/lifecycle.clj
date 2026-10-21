@@ -68,7 +68,8 @@
   [state worker terminal exporter]
   (let [snapshot @state
         retired? (true? (:shutdown? snapshot))
-        callers-settled? (zero? (get snapshot :caller-export-count 0))
+        callers-settled? (and (zero? (get snapshot :caller-export-count 0))
+                             (not (:preparation-unsettled? snapshot)))
         worker-settled? (try (or (nil? worker) (not (.isAlive worker)))
                             (catch :default _ false))
         outcome (terminal-status terminal)
@@ -170,7 +171,10 @@
   terminate within `shutdown-join-bound-ms`; otherwise this throws and the
   caller must not close the exporter. No sibling or caller-owned force-flush
   thread is interrupted. Optional owner options override the cooperative grace
-  and post-grace join bound; the two-argument form preserves existing defaults."
+  and post-grace join bound; the two-argument form preserves existing defaults.
+  An optional trusted :before-worker-interrupt! callback must boundedly fence
+  new publication and return literal true, without waiting for I/O or taking
+  the worker's drain monitor. Failure prevents close; it is not quiescence."
   ([worker state] (await-owned-worker! worker state {}))
   ([worker state options]
   (let [{grace-ms :shutdown-cancel-grace-ms join-ms :shutdown-join-bound-ms}
@@ -190,6 +194,13 @@
                 interrupted? (or interrupted? interrupt-now?)
                 remaining-ns (- deadline (System/nanoTime))]
             (when interrupt-now?
+              ;; Optional bounded, nonwaiting owner fence. Publication must be
+              ;; fenced BEFORE cancellation becomes visible or interruption can
+              ;; race a late submission. Unrelated SDK owners have no hook.
+              (when-let [fence! (:before-worker-interrupt! options)]
+                (when-not (true? (fence!))
+                  (throw (ex-info "Worker publication fence is unconfirmed"
+                                  {:otel.sdk/error :worker-publication-fence-unconfirmed}))))
               (swap! state
                      (fn [current]
                        (-> current
