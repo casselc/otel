@@ -26,6 +26,15 @@
               :git/sha "6288a7ccd04087f01061275367f7dabffd39cdba"
               :deps/root "incubator/codec"}}
             :main-opts ["-m" "otel.payload-scalar-shape-plan-test"]}
+           :stock-scalar-views-test
+           {:extra-paths ["test"]
+            :extra-deps
+            {io.github.chucklehead-dev/jolt-codec
+             {:git/url "https://github.com/chucklehead-dev/jolt-otel-clickhouse.git"
+              :git/sha "68ee1ca8f2826c930ff668ea9532c0a3f498dc41"
+              :deps/root "incubator/codec"}}
+            :main-opts ["-m" "otel.scalar-text-payload-projector-test"
+                        "68ee1ca8f2826c930ff668ea9532c0a3f498dc41"]}
            :sorted-scalar-map-native-test
            {:extra-paths ["test"]
             :main-opts ["-m" "otel.sorted-scalar-string-map-test"]}

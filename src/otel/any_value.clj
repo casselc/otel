@@ -489,3 +489,50 @@
   ([] (scalar-string-map-payload-converter* 64 65536))
   ([folder] (scalar-string-map-payload-converter* 64 65536 folder))
   ([folder options] (scalar-string-map-payload-converter* 64 65536 folder options)))
+
+(defn scalar-text-payload-projector
+  "Experimental encoder-only handoff, NOT a map-returning converter.
+
+  Returns a fresh serial-payload closure or nil on unsupported host/capability.
+  The closure returns a fresh plain map OR the supplied trusted codec's opaque
+  scalar-text view, or nil to require the caller's existing normalization path.
+  Use its result only with that codec, never as an ordinary Clojure map or a
+  data.json value. The existing scalar-string-map-payload-converter is unchanged.
+
+  SDK owns all eight ORIGINAL policy anchors and scalar limits. Source-root
+  cache hits run first, then the original plain-map helper, learned sorted-map
+  view, and original sorted-map fallback. Learn only after original admission.
+  Views do not enter the ordinary plain-map root cache. Successful fallback
+  maps retain its existing fresh-wrapper/admission/retention behavior.
+
+  Retention bounds are fixed per closure:64 root-cache insertions/65536 String
+  characters,8 schemas/8192 key characters/128 keys per schema, plus bounded
+  native template overhead. Views may own ephemeral value slots but plans must
+  retain no source maps/trees/telemetry values. These are not hard RSS bounds.
+
+  Requires {:shape-plan-factory trusted-native-factory}; the factory and optional
+  folder have the same trusted callback-free native contracts as the existing
+  map converter. No callback/global registration, permission to skip policy,
+  cross-thread redefinition lock or concurrent-use promise is introduced.
+  Input Strings/collections must remain immutable during use. Not adopted by
+  default SDK/exporter use; a whole consumer needs separate qualification."
+  [folder options]
+  (when-not (and (map? options) (= #{:shape-plan-factory} (set (keys options)))
+                 (ifn? (:shape-plan-factory options)))
+    (throw (ex-info "Invalid scalar-text projector options" {:type ::invalid-scalar-text-projector})))
+  (let [bindings (scalar-string-map-payload-bindings)]
+    (when-let [{:keys [current? lookup store!]}
+               (load-scalar-string-map-payload-cache bindings 64 65536 folder)]
+      (when-let [{shape-lookup :lookup learn! :learn!}
+                 (load-scalar-text-planner (:shape-plan-factory options) bindings 8 8192)]
+        (fn [value]
+          (when (current?)
+            (or (lookup value)
+                (when-let [converted (original-try-scalar-string-map value)]
+                  (store! value converted))
+                (when-let [view (shape-lookup value)]
+                  ;; Do not send an opaque view through the plain-map cache.
+                  (when (current?) view))
+                (when-let [converted (original-try-sorted-scalar-string-map value)]
+                  (learn! value)
+                  (store! value converted)))))))))

@@ -94,5 +94,7 @@ jobs:
         run: jolt -Srepro -M:sorted-scalar-map-native-test
       - name: Require bounded shape plans with the published independent library
         run: jolt -Srepro -M:stock-shape-plans-test
+      - name: Require scalar-text views with the published independent library
+        run: jolt -Srepro -M:stock-scalar-views-test
       - name: Retain ordinary AnyValue semantics
         run: jolt -Srepro -M:test -m otel.test-runner any-value
