@@ -7,6 +7,8 @@
   ordinary/nil defaults, metric/log pipelines and construction rollback;
   invalid adapters reach the existing pre-worker validation. This does not
   enable overlap by default or expand any exporter's supported ownership modes.
+  Explicit simple processors and supplied processor sequences still ignore
+  batch options, including this adapter.
 
 - Classify OTLP AnyValue's seven fixed fields with a bounded scan rather than
   a per-value lazy filter. Preserve field precedence, empty values, conflicting
