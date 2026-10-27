@@ -344,6 +344,13 @@
     :endpoint         OTLP base endpoint (OTEL_EXPORTER_OTLP_ENDPOINT)
     :headers          extra OTLP request headers
     :processor        :batch (default) or :simple
+    :experimental-span-preparation programmatic trusted adapter passed to the
+                      maintained batch span processor; see otel.sdk.preparation.
+                      Not environment/EDN configuration or an arbitrary async
+                      exporter. Like other batch options, unused and unvalidated
+                      with :simple or :span-processors; nil
+                      keeps ordinary synchronous batching. Exporter ownership
+                      and the matching construction receipt are unchanged.
     :span-processors  optional replacement tracing processor sequence; the SDK
                       owns and shuts down every supplied processor
     :metrics?         collect metrics (default true)
@@ -424,7 +431,8 @@
                                        (export/simple-processor span-exporter child)
                                        (export/batch-processor span-exporter
                                          (select-keys opts [:schedule-delay-ms :max-queue-size
-                                                            :max-export-batch-size]) child))))]
+                                                            :max-export-batch-size
+                                                            :experimental-span-preparation]) child))))]
                                 []))
                  tp (acquire-provider! receipt
                       (construct-return! receipt
