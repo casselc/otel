@@ -29,6 +29,10 @@
              ((and (htable? m) (eq? (jolt-ref-get m tag) sorted-tag))
               (let ((entry (hashtable-ref table (jolt-ref-get m tree-key) #f)))
                 (and entry (eq? (vector-ref entry 0) 'sorted)
+                     ;; A tree/ops/count match does not attest the wrapper's
+                     ;; representation. Do not replay an admitted scoll result
+                     ;; through a forged legacy tagged htable sharing its tree.
+                     (eq? (vector-ref entry 5) (record-rtd m))
                      (eq? (vector-ref entry 1) (jolt-ref-get m ops-key))
                      (eqv? (vector-ref entry 2) (jolt-ref-get m count-key))
                      (fresh entry))))
@@ -50,7 +54,7 @@
                      ((and (htable? m) (eq? (jolt-ref-get m tag) sorted-tag))
                       (hashtable-set! table (jolt-ref-get m tree-key)
                         (vector 'sorted (jolt-ref-get m ops-key) (jolt-ref-get m count-key)
-                                (pmap-root result) (pmap-cnt result)))))
+                                (pmap-root result) (pmap-cnt result) (record-rtd m)))))
                    (set! insertions (+ insertions 1))
                    (set! retained (+ retained charge)))))
              ;; Original helpers already return a fresh metadata-free wrapper.

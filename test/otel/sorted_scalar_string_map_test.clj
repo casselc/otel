@@ -1,6 +1,7 @@
 (ns otel.sorted-scalar-string-map-test
   (:require [clojure.test :refer [deftest is run-tests]]
             [otel.any-value :as any] [jolt.host :as host] [jolt.scheme :as scheme]
+            [otel.sorted-runtime-fixture :as layout]
             [clojure.java.io :as io] [clojure.string :as str]))
 
 (defn fixture [n]
@@ -53,10 +54,10 @@
 (deftest unknown-table-operations-decline-without-trial-callbacks
   (doseq [operation [:seq :count :get]]
     (let [m (fixture 16) calls (atom 0)]
-      (host/ref-put! m :ops
-                     (assoc (host/ref-get m :ops) operation
-                            (fn [& _] (swap! calls inc) (throw (ex-info "custom-op" {})))))
-      (is (nil? (any/try-sorted-scalar-string-map m)))
+      (let [bad (layout/altered-copy m :ops
+                  (assoc (host/ref-get m :ops) operation
+                    (fn [& _] (swap! calls inc) (throw (ex-info "custom-op" {})))))]
+        (is (nil? (any/try-sorted-scalar-string-map bad))))
       (is (zero? @calls)))))
 
 (deftest comparator-is-never-called-during-admission-or-copy
@@ -70,12 +71,19 @@
     (is (zero? @calls))))
 
 (deftest malformed-node-shapes-and-counts-decline
+  (when layout/native-nodes?
+    (doseq [source ["(vector #f \"a\" 1 jolt-nil)"
+                    "(vector 'red \"a\" 1 jolt-nil jolt-nil)"
+                    "(vector #f 7 1 jolt-nil jolt-nil)"
+                    "(vector #f \"a\" (jolt-vector 1) jolt-nil jolt-nil)"
+                    "(vector #f \"a\" 1 #t jolt-nil)"]]
+      (is (nil? (any/try-sorted-scalar-string-map
+                  (layout/altered-copy (sorted-map "a" 1) :tree (scheme/eval-string source)))))))
   (doseq [[field value] [[:cnt -1] [:cnt 0] [:cnt "one"]
                          [:tree [nil "a" 1 nil]] [:tree [nil "a" 1 nil nil :extra]]
                          [:tree [nil :not-string 1 nil nil]]
                          [:tree [nil "a" 1 :not-a-node nil]]]]
-    (let [m (sorted-map "a" 1)]
-      (host/ref-put! m field value)
+    (let [m (layout/altered-copy (sorted-map "a" 1) field value)]
       (is (nil? (any/try-sorted-scalar-string-map m)))))
   (let [m (fixture 1) maximum (any/default-string-value-max-chars)]
     (is (some? (any/try-sorted-scalar-string-map (assoc m "text" (apply str (repeat maximum "x"))))))
@@ -83,8 +91,8 @@
 
 (deftest loader-geometry-probe-has-an-order-sensitive-negative-control
   (let [source (slurp (io/resource "otel/sorted_scalar_string_map.ss"))
-        mutant (str/replace source "(copy-tree! (pvec-nth! tree 3) out)"
-                                   "(copy-tree! (pvec-nth! tree 4) out)")
+        mutant (str/replace source "(copy-tree! (sc-nd-left tree) out)"
+                                   "(copy-tree! (sc-nd-right tree) out)")
         ;; Replace only the left visit; the right subtree is now visited twice.
         ;; A mere wrapper UID check would accept this source unchanged.
         prototype @#'any/scalar-sorted-map-prototype

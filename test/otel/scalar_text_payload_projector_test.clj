@@ -5,6 +5,7 @@
             [otel.payload-scalar-string-map-cache-test :as existing]
             [jolt.codec.experimental :as codec]
             [jolt.codec.scalar-text.experimental :as shapes]
+            [jolt.host :as host] [jolt.scheme :as scheme]
             [jolt.traversal.experimental :as traversal]))
 
 (def folder (delay (traversal/native-pmap-folder (traversal/open-traversal))))
@@ -26,6 +27,8 @@
     (is (not (identical? hit another-hit)))
     (is (= before @ops) "root cache wins before the learned plan")
     (let [view (project distinct)]
+      (is (some? view) "a declined result is not an opaque view")
+      (is (not (false? view)))
       (is (not (map? view)))
       (is (= (encoded first-result) (encoded view))))
     (let [plain (existing/plain-fixture 17) before @ops]
@@ -74,6 +77,47 @@
   (doseq [f [(fn [& _] nil) (fn [& _] 42) (fn [& _] (throw (ex-info "private detail" {})))]]
     (is (nil? (any/scalar-text-payload-projector @folder {:shape-plan-factory f}))))
   (is (nil? (any/scalar-text-payload-projector nil {:shape-plan-factory (factory)}))))
+
+(deftest wrapper-representation-is-part-of-sorted-cache-admission
+  (let [m (fixture)
+        native-wrapper? ((scheme/eval-string
+                           "(lambda (m) (eq? (record-type-uid (record-rtd m)) 'chez-scoll-v1))") m)
+        forged (host/tagged-table :jolt/sorted-map)
+        project (projector)
+        convert (any/scalar-string-map-payload-converter @folder)
+        p ((shapes/native-plan-factory) [] 1000 m 8 8192)]
+    (doseq [field [:ops :cnt :tree :cmp :cmp-fn]]
+      (host/ref-put! forged field (host/ref-get m field)))
+    (is (= (existing/oracle m) (convert m)))
+    (is (= (existing/oracle m) (project m)))
+    (is (true? (p 1 m)))
+    (if native-wrapper?
+      (do
+        (is (nil? (any/try-sorted-scalar-string-map forged)))
+        (is (nil? (convert forged)) "a primed cache must not accept a different wrapper RTD")
+        (is (nil? (project forged)))
+        (is (false? (p 0 forged)))
+        (is (false? (p 1 forged)))
+        (is (thrown? Throwable (host/ref-put! m :cnt 0)))
+        (is (= (existing/oracle m) (convert m)) "rejected mutation leaves the original valid")
+        ;; Mutation control: remove only the representation check from an
+        ;; isolated cache. Same tree/ops/count otherwise produces a stale hit.
+        (let [source (slurp (io/resource "otel/payload_scalar_string_map_cache.ss"))
+              check "(eq? (vector-ref entry 5) (record-rtd m))"
+              _ (is (str/includes? source check))
+              compile-cache (fn [s]
+                              (((scheme/eval-string (str "(lambda (pmap-fold-seq-order) " s ")"))
+                                @folder) [] 4 65536))
+              safe (compile-cache source)
+              unsafe (compile-cache (str/replace source check "#t"))
+              result (existing/oracle m)]
+          (doseq [cache [safe unsafe]] (cache 1 m result nil))
+          (is (false? (safe 0 forged nil nil)))
+          (is (= result (unsafe 0 forged nil nil)) "the known-bad control must actually hit")))
+      (do
+        ;; On the older layout this is the genuine stock wrapper domain.
+        (is (= (existing/oracle m) (convert forged)))
+        (is (= (existing/oracle m) (p 0 forged)))))))
 
 (defn -main [& [expected-codec]]
   (when expected-codec

@@ -5,7 +5,8 @@
   (:require [clojure.test :refer [deftest is testing] :as t]
             [jolt.host :as host]
             [jolt.scheme :as scheme]
-            [otel.any-value :as any]))
+            [otel.any-value :as any]
+            [otel.sorted-runtime-fixture :as layout]))
 
 (defn plain-fixture [n]
   (into {} (map (fn [i] [(str "key-" i) (case (mod i 3) 0 "λ\n\"" 1 false i)])
@@ -146,14 +147,12 @@
     (testing "an :ops swap misses the cache instead of replaying the primed value"
       (let [m (sorted-fixture 9) good (oracle m)]
         (is (= good (convert m)) "prime the cache for this sorted map identity")
-        (host/ref-put! m :ops (into {} (host/ref-get m :ops)))
-        (is (nil? (convert m))
+        (is (nil? (convert (layout/altered-copy m :ops (into {} (host/ref-get m :ops)))))
             "a non-stock :ops must decline like the original helper, never a stale hit")))
     (testing "a :cnt corruption misses the cache instead of replaying the primed value"
       (let [m (sorted-fixture 9) good (oracle m)]
         (is (= good (convert m)) "prime the cache for this sorted map identity")
-        (host/ref-put! m :cnt 8)
-        (is (nil? (convert m))
+        (is (nil? (convert (layout/altered-copy m :cnt 8)))
             "a :cnt that no longer matches the tree must decline, never a stale hit")))))
 
 (deftest a-budget-decline-still-returns-a-correct-uncached-conversion
@@ -195,9 +194,9 @@
         m (sorted-fixture 16)
         replacement (assoc (sorted-fixture 16) "key-0" "new-tree")]
     (is (= (oracle m) (convert m)))
-    (host/ref-put! m :tree (host/ref-get replacement :tree))
-    (is (= (oracle replacement) (convert m)))
-    (is (not= (oracle (sorted-fixture 16)) (convert m)))))
+    (let [changed (layout/altered-copy m :tree (host/ref-get replacement :tree))]
+      (is (= (oracle replacement) (convert changed)))
+      (is (not= (oracle (sorted-fixture 16)) (convert changed))))))
 
 (deftest oversized-keys-count-against-the-character-budget
   (let [convert (any/scalar-string-map-payload-converter* 64 1024)

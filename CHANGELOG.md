@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Qualify scalar-map conversion on Jolt's fixed-field sorted collection layout
+  as well as the earlier tagged-table layout. Preserve bounded native tree
+  validation and live policy checks; include wrapper representation in sorted
+  payload-cache stamps so a different wrapper cannot replay a cached result.
+
 - Forward an explicit trusted span-preparation adapter through `sdk/init!` to
   its maintained batch processor instead of silently dropping it. Preserve
   ordinary/nil defaults, metric/log pipelines and construction rollback;
