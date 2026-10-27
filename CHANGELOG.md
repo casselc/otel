@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Forward an explicit trusted span-preparation adapter through `sdk/init!` to
+  its maintained batch processor instead of silently dropping it. Preserve
+  ordinary/nil defaults, metric/log pipelines and construction rollback;
+  invalid adapters reach the existing pre-worker validation. This does not
+  enable overlap by default or expand any exporter's supported ownership modes.
+
 - Classify OTLP AnyValue's seven fixed fields with a bounded scan rather than
   a per-value lazy filter. Preserve field precedence, empty values, conflicting
   field rejection, and the existing depth/node/byte validation.

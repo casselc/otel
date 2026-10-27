@@ -24,6 +24,7 @@
     otel.sdk.batch-readiness-test
     otel.sdk.preparation-test
     otel.sdk.preparation-final-drain-test
+    otel.sdk.init-preparation-test
     otel.sdk.construction-rollback-test
     otel.sdk.construction-face-transfer-test
     otel.sdk.pipeline-construction-face-test
