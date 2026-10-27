@@ -120,3 +120,46 @@
         (is (= 1 (:ordinary-spans @state)))
         (is (zero? (:confirmed-spans @state)))
         (finally (sdk/shutdown! handle))))))
+
+(deftest span-only-init-forwards-the-same-trusted-adapter
+  (let [{:keys [exporter adapter state live]} (fixture)
+        handle (sdk/init! (assoc (options exporter) :metrics? false :logs? false
+                                :experimental-span-preparation adapter))]
+    (try
+      (emit-span!)
+      (is (true? (sdk/force-flush! handle)))
+      (is (= 1 (:confirmed-spans @state)))
+      (is (zero? (:ordinary-spans @state)))
+      (is (empty? @live))
+      (finally (sdk/shutdown! handle)))
+    (is (= {:spans 1 :metrics 0 :logs 0} (:releases @state)))))
+
+(deftest explicit-simple-mode-keeps-its-no-batch-options-contract
+  ;; The explicit simple route also ignores ordinary batch configuration;
+  ;; supplying an adapter must not silently replace that chosen processor.
+  (doseq [choice [true {} :valid]]
+    (let [{:keys [exporter adapter state]} (fixture)
+          selected (if (= choice :valid) adapter choice)
+          handle (sdk/init! (assoc (options exporter) :processor :simple
+                                  :metrics? false :logs? false
+                                  :experimental-span-preparation selected))]
+      (try
+        (emit-span!)
+        (is (true? (sdk/force-flush! handle)))
+        (is (= 1 (:ordinary-spans @state)))
+        (is (zero? (:confirmed-spans @state)))
+        (finally (sdk/shutdown! handle))))))
+
+(deftest supplied-processors-remain-the-actual-owned-sequence
+  (let [{:keys [exporter state]} (fixture)
+        processor (export/simple-processor exporter)
+        handle (sdk/init! {:exporter :none :metrics? false :logs? false
+                           :span-processors [processor]
+                           :experimental-span-preparation true})]
+    (try
+      (emit-span!)
+      (is (true? (sdk/force-flush! handle)))
+      (is (= 1 (:ordinary-spans @state)))
+      (is (zero? (:confirmed-spans @state)))
+      (finally (sdk/shutdown! handle)))
+    (is (= {:spans 1 :metrics 0 :logs 0} (:releases @state)))))

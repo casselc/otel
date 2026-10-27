@@ -347,7 +347,8 @@
     :experimental-span-preparation programmatic trusted adapter passed to the
                       maintained batch span processor; see otel.sdk.preparation.
                       Not environment/EDN configuration or an arbitrary async
-                      exporter. Unused with :simple or :span-processors; nil
+                      exporter. Like other batch options, unused and unvalidated
+                      with :simple or :span-processors; nil
                       keeps ordinary synchronous batching. Exporter ownership
                       and the matching construction receipt are unchanged.
     :span-processors  optional replacement tracing processor sequence; the SDK
